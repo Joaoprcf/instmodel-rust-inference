@@ -1,0 +1,8 @@
+{
+  "name": "element_wise_ops",
+  "description": "Element-wise addition and multiplication operations",
+  "buffer_sizes": [100000, 100000, 100000, 100000],
+  "input_size": 200000,
+  "operations": ["add", "multiply"],
+  "num_executions": 1000
+}

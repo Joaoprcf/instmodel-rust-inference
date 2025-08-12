@@ -513,7 +513,7 @@ impl InstructionModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::instruction_model_info::{InstructionInfo, ValidationData};
+    use crate::instruction_model_info::ValidationData;
 
     #[test]
     fn test_calculate_feature_size_from_features() {

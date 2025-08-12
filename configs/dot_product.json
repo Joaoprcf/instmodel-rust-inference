@@ -1,0 +1,10 @@
+{
+  "name": "dot_product",
+  "description": "Neural network with dot product operations",
+  "network_config": {
+    "input_size": 2,
+    "hidden_size": 10000,
+    "output_size": 10
+  },
+  "num_executions": 1000
+}

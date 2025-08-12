@@ -30,16 +30,30 @@ impl Instruction for ElemWiseBuffersAddInstruction {
     }
 
     fn apply(&self, unified_computation_buffer: &mut [f32]) -> Result<(), InstructionModelError> {
-        // Initialize output buffer with zeros
-        for i in 0..self.data_size {
-            unified_computation_buffer[self.output_ptr + i] = 0.0;
+        if self.input_ptrs.len() < 2 {
+            return Err(InstructionModelError::InsufficientInputBuffers);
         }
 
-        // Add all input buffers to the output buffer
-        for &input_ptr in &self.input_ptrs {
+        // Optimized implementation for exactly 2 input buffers (most common case)
+        if self.input_ptrs.len() == 2 {
+            let input1_start = self.input_ptrs[0];
+            let input2_start = self.input_ptrs[1];
+            let output_start = self.output_ptr;
+
+            // Simple direct loop - matches manual implementation pattern
             for i in 0..self.data_size {
-                unified_computation_buffer[self.output_ptr + i] +=
-                    unified_computation_buffer[input_ptr + i];
+                unified_computation_buffer[output_start + i] = unified_computation_buffer
+                    [input1_start + i]
+                    + unified_computation_buffer[input2_start + i];
+            }
+        } else {
+            // Fallback for more than 2 input buffers
+            for i in 0..self.data_size {
+                let mut sum = unified_computation_buffer[self.input_ptrs[0] + i];
+                for &input_ptr in &self.input_ptrs[1..] {
+                    sum += unified_computation_buffer[input_ptr + i];
+                }
+                unified_computation_buffer[self.output_ptr + i] = sum;
             }
         }
 
