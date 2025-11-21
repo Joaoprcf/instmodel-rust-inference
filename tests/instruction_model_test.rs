@@ -1,7 +1,7 @@
 //! Comprehensive tests for the InstructionModel that match the Java implementation.
 
-use neural_inference::instruction_model_info::*;
-use neural_inference::{Activation, InstructionModel, InstructionModelInfo, ValidationData};
+use instmodel_rust_inference::instruction_model_info::*;
+use instmodel_rust_inference::{Activation, InstructionModel, InstructionModelInfo, ValidationData};
 
 const DELTA: f32 = 0.00005;
 

@@ -5,8 +5,8 @@
 
 use env_logger;
 use log::{error, info};
-use neural_inference::instruction_model_info::*;
-use neural_inference::{Activation, InstructionModel};
+use instmodel_rust_inference::instruction_model_info::*;
+use instmodel_rust_inference::{Activation, InstructionModel};
 use std::time::Instant;
 
 /// Manual implementation of the same neural network for comparison

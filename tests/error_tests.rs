@@ -3,9 +3,9 @@
 //! This module tests error variants that are actually implemented and validated
 //! in the current codebase to ensure proper error handling.
 
-use neural_inference::errors::{InstructionModelError, ValidationError};
-use neural_inference::instruction_model::InstructionModel;
-use neural_inference::instruction_model_info::{
+use instmodel_rust_inference::errors::{InstructionModelError, ValidationError};
+use instmodel_rust_inference::instruction_model::InstructionModel;
+use instmodel_rust_inference::instruction_model_info::{
     CopyInstructionInfo, InstructionInfo, InstructionModelInfo, ValidationData,
 };
 use std::collections::HashMap;

@@ -1,6 +1,6 @@
 //! Tests for instruction sequence computation loading from JSON.
 
-use neural_inference::{InstructionModel, InstructionModelInfo};
+use instmodel_rust_inference::{InstructionModel, InstructionModelInfo};
 use serde_json;
 use std::collections::HashMap;
 

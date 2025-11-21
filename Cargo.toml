@@ -1,11 +1,11 @@
 [package]
-name = "neural-inference"
-version = "0.1.0"
+name = "instmodel-rust-inference"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 
 [lib]
-name = "neural_inference"
+name = "instmodel_rust_inference"
 path = "src/lib.rs"
 
 [[bin]]

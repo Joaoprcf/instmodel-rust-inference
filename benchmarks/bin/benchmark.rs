@@ -2,7 +2,7 @@
 
 use env_logger;
 use log::error;
-use neural_inference::benchmarks::{BenchmarkResult, BenchmarkRunner};
+use instmodel_rust_inference::benchmarks::{BenchmarkResult, BenchmarkRunner};
 use std::env;
 
 fn main() {
