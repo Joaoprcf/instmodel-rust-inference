@@ -41,6 +41,10 @@ pub enum InstructionInfo {
     ElemWiseBuffersAdd(ElemWiseBuffersAddInstructionInfo),
     #[serde(rename = "MULTIPLY_ELEMENTWISE_BUFFERS")]
     ElemWiseBuffersMul(ElemWiseBuffersMulInstructionInfo),
+    #[serde(rename = "REDUCE_SUM")]
+    ReduceSum(ReduceSumInstructionInfo),
+    #[serde(rename = "ATTENTION")]
+    Attention(AttentionInstructionInfo),
 }
 
 impl InstructionInfo {
@@ -56,6 +60,8 @@ impl InstructionInfo {
             InstructionInfo::MapTransform(info) => vec![info.input],
             InstructionInfo::ElemWiseBuffersAdd(info) => info.input.clone(),
             InstructionInfo::ElemWiseBuffersMul(info) => info.input.clone(),
+            InstructionInfo::ReduceSum(info) => vec![info.input],
+            InstructionInfo::Attention(info) => vec![info.input, info.key],
         }
     }
 
@@ -72,6 +78,8 @@ impl InstructionInfo {
             InstructionInfo::MapTransform(info) => info.output,
             InstructionInfo::ElemWiseBuffersAdd(info) => info.output,
             InstructionInfo::ElemWiseBuffersMul(info) => info.output,
+            InstructionInfo::ReduceSum(info) => info.output,
+            InstructionInfo::Attention(info) => info.output,
         }
     }
 }
@@ -175,6 +183,28 @@ pub struct ElemWiseBuffersMulInstructionInfo {
     pub input: Vec<usize>,
     /// Output buffer index.
     pub output: usize,
+}
+
+/// Represents a reduce sum operation that sums all values in an input buffer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReduceSumInstructionInfo {
+    /// Input buffer index.
+    pub input: usize,
+    /// Output buffer index.
+    pub output: usize,
+}
+
+/// Represents an attention operation instruction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttentionInstructionInfo {
+    /// Input buffer index (query/value buffer).
+    pub input: usize,
+    /// Key buffer index.
+    pub key: usize,
+    /// Output buffer index.
+    pub output: usize,
+    /// Weights index targeting the weights of a given layer.
+    pub weights: usize,
 }
 
 /// Instruction model information required to build the computation graph.

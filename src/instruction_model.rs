@@ -321,6 +321,9 @@ impl InstructionModel {
                 crate::instruction_model_info::InstructionInfo::Dot(info) => {
                     used_weights[info.weights] = true;
                 }
+                crate::instruction_model_info::InstructionInfo::Attention(info) => {
+                    used_weights[info.weights] = true;
+                }
                 crate::instruction_model_info::InstructionInfo::ElemWiseAdd(info) => {
                     used_parameters[info.parameters] = true;
                 }

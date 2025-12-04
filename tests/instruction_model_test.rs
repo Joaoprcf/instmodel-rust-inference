@@ -1,6 +1,11 @@
 //! Comprehensive tests for the InstructionModel that match the Java implementation.
 
-use instmodel_rust_inference::instruction_model_info::*;
+use instmodel_rust_inference::instruction_model_info::{
+    ActivationInstructionInfo, AttentionInstructionInfo, CopyInstructionInfo,
+    CopyMaskedInstructionInfo, DotInstructionInfo, ElemWiseAddInstructionInfo,
+    ElemWiseBuffersAddInstructionInfo, ElemWiseBuffersMulInstructionInfo,
+    ElemWiseMulInstructionInfo, InstructionInfo, ReduceSumInstructionInfo,
+};
 use instmodel_rust_inference::{Activation, InstructionModel, InstructionModelInfo, ValidationData};
 
 const DELTA: f32 = 0.00005;
@@ -538,4 +543,248 @@ fn test_validation() {
         model.is_ok(),
         "Model with valid validation data should be created successfully"
     );
+}
+
+#[test]
+fn reduce_sum_layer() {
+    // Test REDUCE_SUM: sums all values in a buffer to a single value
+    let layer_sizes = vec![4, 1];
+
+    let instructions = vec![InstructionInfo::ReduceSum(ReduceSumInstructionInfo {
+        input: 0,
+        output: 1,
+    })];
+
+    let model_info = InstructionModelInfo {
+        features: Some(vec![
+            "f1".to_string(),
+            "f2".to_string(),
+            "f3".to_string(),
+            "f4".to_string(),
+        ]),
+        feature_size: None,
+        computation_buffer_sizes: layer_sizes,
+        instructions,
+        weights: vec![],
+        bias: vec![],
+        parameters: None,
+        maps: None,
+        validation_data: None,
+    };
+
+    let model = InstructionModel::new(model_info).expect("Model creation should succeed");
+
+    // Test case 1: positive values
+    let inputs = vec![1.0, 2.0, 3.0, 4.0];
+    let result = model
+        .predict_single(&inputs)
+        .expect("Prediction should succeed");
+    assert!((result - 10.0).abs() < DELTA); // 1 + 2 + 3 + 4 = 10
+
+    // Test case 2: mixed values
+    let inputs2 = vec![1.0, -2.0, 3.0, -4.0];
+    let result2 = model
+        .predict_single(&inputs2)
+        .expect("Prediction should succeed");
+    assert!((result2 - (-2.0)).abs() < DELTA); // 1 - 2 + 3 - 4 = -2
+}
+
+#[test]
+fn reduce_sum_in_pipeline() {
+    // Test REDUCE_SUM as part of a larger pipeline
+    let layer_sizes = vec![3, 3, 1];
+
+    let instructions = vec![
+        // First apply element-wise operations
+        InstructionInfo::Activation(ActivationInstructionInfo {
+            input: 0,
+            activation: Activation::Relu,
+        }),
+        InstructionInfo::Copy(CopyInstructionInfo {
+            input: 0,
+            output: 1,
+            internal_index: 0,
+        }),
+        // Then reduce sum
+        InstructionInfo::ReduceSum(ReduceSumInstructionInfo {
+            input: 1,
+            output: 2,
+        }),
+    ];
+
+    let model_info = InstructionModelInfo {
+        features: Some(vec!["f1".to_string(), "f2".to_string(), "f3".to_string()]),
+        feature_size: None,
+        computation_buffer_sizes: layer_sizes,
+        instructions,
+        weights: vec![],
+        bias: vec![],
+        parameters: None,
+        maps: None,
+        validation_data: None,
+    };
+
+    let model = InstructionModel::new(model_info).expect("Model creation should succeed");
+
+    // Input with negative values that ReLU will zero out
+    let inputs = vec![2.0, -1.0, 3.0];
+    let result = model
+        .predict_single(&inputs)
+        .expect("Prediction should succeed");
+    // After ReLU: [2.0, 0.0, 3.0], sum = 5.0
+    assert!((result - 5.0).abs() < DELTA);
+}
+
+#[test]
+fn attention_layer() {
+    // Test ATTENTION instruction
+    // Attention: linear transform on key -> softmax -> element-wise multiply with query
+    let layer_sizes = vec![2, 2, 2];
+
+    // Identity weights so linear transform preserves values
+    let weights = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+    let bias = vec![0.0, 0.0];
+
+    let instructions = vec![InstructionInfo::Attention(AttentionInstructionInfo {
+        input: 0,  // query buffer
+        key: 1,    // key buffer
+        output: 2, // output buffer
+        weights: 0,
+    })];
+
+    let model_info = InstructionModelInfo {
+        features: Some(vec![
+            "q1".to_string(),
+            "q2".to_string(),
+            "k1".to_string(),
+            "k2".to_string(),
+        ]),
+        feature_size: Some(4),
+        computation_buffer_sizes: layer_sizes,
+        instructions,
+        weights: vec![weights],
+        bias: vec![bias],
+        parameters: None,
+        maps: None,
+        validation_data: None,
+    };
+
+    let model = InstructionModel::new(model_info).expect("Model creation should succeed");
+
+    // Query: [1.0, 2.0], Key: [0.0, 0.0]
+    // Linear on key: [0.0, 0.0]
+    // Softmax([0.0, 0.0]) = [0.5, 0.5]
+    // Element-wise multiply: [0.5 * 1.0, 0.5 * 2.0] = [0.5, 1.0]
+    let inputs = vec![1.0, 2.0, 0.0, 0.0];
+    let result = model.predict(&inputs).expect("Prediction should succeed");
+    assert!((result[0] - 0.5).abs() < DELTA);
+    assert!((result[1] - 1.0).abs() < DELTA);
+}
+
+#[test]
+fn attention_with_weighted_transform() {
+    // Test ATTENTION with non-identity weights
+    let layer_sizes = vec![2, 2, 2];
+
+    // Weights that scale and shift
+    let weights = vec![vec![2.0, 0.0], vec![0.0, 1.0]];
+    let bias = vec![1.0, -1.0];
+
+    let instructions = vec![InstructionInfo::Attention(AttentionInstructionInfo {
+        input: 0,
+        key: 1,
+        output: 2,
+        weights: 0,
+    })];
+
+    let model_info = InstructionModelInfo {
+        features: Some(vec![
+            "q1".to_string(),
+            "q2".to_string(),
+            "k1".to_string(),
+            "k2".to_string(),
+        ]),
+        feature_size: Some(4),
+        computation_buffer_sizes: layer_sizes,
+        instructions,
+        weights: vec![weights],
+        bias: vec![bias],
+        parameters: None,
+        maps: None,
+        validation_data: None,
+    };
+
+    let model = InstructionModel::new(model_info).expect("Model creation should succeed");
+
+    // Query: [1.0, 1.0], Key: [1.0, 1.0]
+    // Linear on key: [2.0*1.0 + 0.0*1.0 + 1.0, 0.0*1.0 + 1.0*1.0 - 1.0] = [3.0, 0.0]
+    // Softmax([3.0, 0.0]): exp(3-3)/(exp(0)+exp(-3)), exp(0-3)/(exp(0)+exp(-3))
+    let exp_0 = 1.0f32;
+    let exp_neg3 = (-3.0f32).exp();
+    let sum = exp_0 + exp_neg3;
+    let softmax_0 = exp_0 / sum;
+    let softmax_1 = exp_neg3 / sum;
+
+    let inputs = vec![1.0, 1.0, 1.0, 1.0];
+    let result = model.predict(&inputs).expect("Prediction should succeed");
+
+    // Element-wise multiply: [softmax_0 * 1.0, softmax_1 * 1.0]
+    assert!((result[0] - softmax_0).abs() < DELTA);
+    assert!((result[1] - softmax_1).abs() < DELTA);
+}
+
+#[test]
+fn attention_in_complex_pipeline() {
+    // Test ATTENTION combined with other operations
+    let layer_sizes = vec![3, 3, 3, 1];
+
+    let weights = vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0], vec![0.0, 0.0, 1.0]];
+    let bias = vec![0.0, 0.0, 0.0];
+
+    let instructions = vec![
+        // First, attention between query and key
+        InstructionInfo::Attention(AttentionInstructionInfo {
+            input: 0,
+            key: 1,
+            output: 2,
+            weights: 0,
+        }),
+        // Then reduce sum the attention output
+        InstructionInfo::ReduceSum(ReduceSumInstructionInfo {
+            input: 2,
+            output: 3,
+        }),
+    ];
+
+    let model_info = InstructionModelInfo {
+        features: Some(vec![
+            "q1".to_string(),
+            "q2".to_string(),
+            "q3".to_string(),
+            "k1".to_string(),
+            "k2".to_string(),
+            "k3".to_string(),
+        ]),
+        feature_size: Some(6),
+        computation_buffer_sizes: layer_sizes,
+        instructions,
+        weights: vec![weights],
+        bias: vec![bias],
+        parameters: None,
+        maps: None,
+        validation_data: None,
+    };
+
+    let model = InstructionModel::new(model_info).expect("Model creation should succeed");
+
+    // Query: [1.0, 2.0, 3.0], Key: [0.0, 0.0, 0.0]
+    // Linear on key: [0.0, 0.0, 0.0]
+    // Softmax: [1/3, 1/3, 1/3]
+    // Element-wise: [1/3 * 1.0, 1/3 * 2.0, 1/3 * 3.0] = [1/3, 2/3, 1.0]
+    // Reduce sum: 1/3 + 2/3 + 1.0 = 2.0
+    let inputs = vec![1.0, 2.0, 3.0, 0.0, 0.0, 0.0];
+    let result = model
+        .predict_single(&inputs)
+        .expect("Prediction should succeed");
+    assert!((result - 2.0).abs() < DELTA);
 }

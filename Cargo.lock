@@ -43,6 +43,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b112acc8b3adf4b107a8ec20977da0273a8c386765a3ec0229bd500a1443f9f"
 
 [[package]]
+name = "instmodel-rust-inference"
+version = "0.2.0"
+dependencies = [
+ "env_logger",
+ "log",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "is-terminal"
 version = "0.4.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -76,18 +88,6 @@ name = "memchr"
 version = "2.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a282da65faaf38286cf3be983213fcf1d2e2a58700e808f83f4ea9a4804bc0"
-
-[[package]]
-name = "instmodel-rust-inference"
-version = "0.1.1"
-dependencies = [
- "env_logger",
- "log",
- "pretty_assertions",
- "serde",
- "serde_json",
- "thiserror",
-]
 
 [[package]]
 name = "pretty_assertions"

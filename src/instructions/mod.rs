@@ -7,6 +7,7 @@
 use crate::errors::InstructionModelError;
 
 pub mod activation_instruction;
+pub mod attention_instruction;
 pub mod copy_instruction;
 pub mod copy_masked_instruction;
 pub mod dot_instruction;
@@ -15,8 +16,10 @@ pub mod elem_wise_buffers_add_instruction;
 pub mod elem_wise_buffers_mul_instruction;
 pub mod elem_wise_mul_instruction;
 pub mod map_transform_instruction;
+pub mod reduce_sum_instruction;
 
 pub use activation_instruction::ActivationInstruction;
+pub use attention_instruction::AttentionInstruction;
 pub use copy_instruction::CopyInstruction;
 pub use copy_masked_instruction::CopyMaskedInstruction;
 pub use dot_instruction::DotInstruction;
@@ -25,6 +28,7 @@ pub use elem_wise_buffers_add_instruction::ElemWiseBuffersAddInstruction;
 pub use elem_wise_buffers_mul_instruction::ElemWiseBuffersMulInstruction;
 pub use elem_wise_mul_instruction::ElemWiseMulInstruction;
 pub use map_transform_instruction::MapTransformInstruction;
+pub use reduce_sum_instruction::ReduceSumInstruction;
 
 /// Base trait for all instruction types.
 ///
@@ -139,6 +143,25 @@ pub fn create_instruction(
                 input_ptrs,
                 computation_buffer_indexes[info.output],
                 computation_buffer_sizes[info.output],
+            );
+            Ok(Box::new(instruction))
+        }
+        InstructionInfo::ReduceSum(info) => {
+            let instruction = ReduceSumInstruction::new(
+                computation_buffer_indexes[info.input],
+                computation_buffer_indexes[info.output],
+                computation_buffer_sizes[info.input],
+            );
+            Ok(Box::new(instruction))
+        }
+        InstructionInfo::Attention(info) => {
+            let instruction = AttentionInstruction::new(
+                computation_buffer_indexes[info.input],
+                computation_buffer_indexes[info.key],
+                computation_buffer_indexes[info.output],
+                computation_buffer_sizes[info.output],
+                &weights[info.weights],
+                &bias[info.weights],
             );
             Ok(Box::new(instruction))
         }
