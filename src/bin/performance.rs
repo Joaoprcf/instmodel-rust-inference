@@ -4,9 +4,9 @@
 //! against manual implementations to understand the overhead and efficiency characteristics.
 
 use env_logger;
+use instmodel_inference::instruction_model_info::*;
+use instmodel_inference::{Activation, InstructionModel};
 use log::{error, info};
-use instmodel_rust_inference::instruction_model_info::*;
-use instmodel_rust_inference::{Activation, InstructionModel};
 use std::time::Instant;
 
 /// Manual implementation of the same neural network for comparison

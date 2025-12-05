@@ -33,8 +33,7 @@ impl Instruction for ReduceSumInstruction {
     }
 
     fn apply(&self, unified_computation_buffer: &mut [f32]) -> Result<(), InstructionModelError> {
-        let sum: f32 = unified_computation_buffer
-            [self.input_ptr..self.input_ptr + self.input_size]
+        let sum: f32 = unified_computation_buffer[self.input_ptr..self.input_ptr + self.input_size]
             .iter()
             .sum();
         unified_computation_buffer[self.output_ptr] = sum;

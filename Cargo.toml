@@ -1,5 +1,5 @@
 [package]
-name = "instmodel-rust-inference"
+name = "instmodel_inference"
 version = "0.2.0"
 edition = "2024"
 license = "MIT"
@@ -10,7 +10,7 @@ categories = ["science", "simulation"]
 readme = "README.md"
 
 [lib]
-name = "instmodel_rust_inference"
+name = "instmodel_inference"
 path = "src/lib.rs"
 
 [[bin]]

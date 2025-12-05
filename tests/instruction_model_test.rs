@@ -1,12 +1,12 @@
 //! Comprehensive tests for the InstructionModel that match the Java implementation.
 
-use instmodel_rust_inference::instruction_model_info::{
+use instmodel_inference::instruction_model_info::{
     ActivationInstructionInfo, AttentionInstructionInfo, CopyInstructionInfo,
     CopyMaskedInstructionInfo, DotInstructionInfo, ElemWiseAddInstructionInfo,
     ElemWiseBuffersAddInstructionInfo, ElemWiseBuffersMulInstructionInfo,
     ElemWiseMulInstructionInfo, InstructionInfo, ReduceSumInstructionInfo,
 };
-use instmodel_rust_inference::{Activation, InstructionModel, InstructionModelInfo, ValidationData};
+use instmodel_inference::{Activation, InstructionModel, InstructionModelInfo, ValidationData};
 
 const DELTA: f32 = 0.00005;
 
@@ -738,7 +738,11 @@ fn attention_in_complex_pipeline() {
     // Test ATTENTION combined with other operations
     let layer_sizes = vec![3, 3, 3, 1];
 
-    let weights = vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0], vec![0.0, 0.0, 1.0]];
+    let weights = vec![
+        vec![1.0, 0.0, 0.0],
+        vec![0.0, 1.0, 0.0],
+        vec![0.0, 0.0, 1.0],
+    ];
     let bias = vec![0.0, 0.0, 0.0];
 
     let instructions = vec![

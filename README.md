@@ -5,14 +5,14 @@ A high-performance neural network inference library for Rust that executes optim
 ## Installation
 
 ```bash
-cargo add instmodel-rust-inference
+cargo add instmodel_inference
 ```
 
 Or add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-instmodel-rust-inference = "<version>"
+instmodel_inference = "<version>"
 ```
 
 ## Overview
@@ -31,7 +31,7 @@ This library provides a lightweight, zero-dependency neural network inference en
 ### Simple Neural Network
 
 ```rust
-use instmodel_rust_inference::{
+use instmodel_inference::{
     InstructionModel, InstructionModelInfo, Activation,
     instruction_model_info::{InstructionInfo, DotInstructionInfo},
 };
@@ -71,7 +71,7 @@ let result = model.predict_single(&input)?;
 ### Multi-Layer Neural Network
 
 ```rust
-use instmodel_rust_inference::{
+use instmodel_inference::{
     InstructionModel, InstructionModelInfo, Activation,
     instruction_model_info::{InstructionInfo, DotInstructionInfo},
 };
@@ -121,7 +121,7 @@ let result = model.predict_single(&[1.0, -1.0])?;
 Models can be defined in JSON format and loaded at runtime:
 
 ```rust
-use instmodel_rust_inference::{InstructionModel, InstructionModelInfo};
+use instmodel_inference::{InstructionModel, InstructionModelInfo};
 
 let json_config = r#"
 {
@@ -163,7 +163,7 @@ let model = InstructionModel::new(model_info)?;
 Create a logistic regression model directly from coefficients:
 
 ```rust
-use instmodel_rust_inference::{InstructionModel, InstructionModelInfo};
+use instmodel_inference::{InstructionModel, InstructionModelInfo};
 use std::collections::HashMap;
 
 let mut coefficients = HashMap::new();
@@ -183,7 +183,7 @@ let probability = model.predict_single(&[35.0, 50000.0])?;
 ### Using the Builder Pattern
 
 ```rust
-use instmodel_rust_inference::{
+use instmodel_inference::{
     InstructionModelInfo, InstructionModel,
     instruction_model_info::{InstructionInfo, DotInstructionInfo},
 };
@@ -267,7 +267,7 @@ for input in inputs {
 Include validation data to verify model correctness on creation:
 
 ```rust
-use instmodel_rust_inference::instruction_model_info::ValidationData;
+use instmodel_inference::instruction_model_info::ValidationData;
 
 let model_info = InstructionModelInfo {
     // ... model configuration ...
