@@ -3,6 +3,11 @@ name = "instmodel-rust-inference"
 version = "0.2.0"
 edition = "2024"
 license = "MIT"
+description = "High-performance neural network inference library with instruction-based execution"
+repository = "https://github.com/Joaoprcf/instmodel-rust-inference"
+keywords = ["neural-network", "inference", "machine-learning", "deep-learning"]
+categories = ["science", "simulation"]
+readme = "README.md"
 
 [lib]
 name = "instmodel_rust_inference"
