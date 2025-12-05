@@ -4,7 +4,10 @@
 //! the execution of neural network inference through a sequence of instructions
 //! operating on computation buffers.
 
-use crate::errors::{InstructionModelError, Result};
+use crate::errors::{
+    BufferIndexOutOfBoundsError, ComputationBufferSizeExceedsLimitError, FeatureSizeMismatchError,
+    InstructionModelError, InvalidFeatureSizeError, Result, ValidationInputOutputMismatchError,
+};
 use crate::instruction_model_info::InstructionModelInfo;
 use crate::instructions::{Instruction, create_instruction};
 
@@ -146,15 +149,7 @@ impl InstructionModel {
                 }
             }
 
-            if let Some(feature_size) = instruction_model_info.feature_size {
-                if feature_size != total_size {
-                    return Err(InstructionModelError::FeatureSizeMismatch {
-                        expected: feature_size,
-                        actual: total_size,
-                    });
-                }
-            }
-
+            Self::validate_declared_feature_size(instruction_model_info.feature_size, total_size)?;
             Ok(total_size)
         } else if let Some(feature_size) = instruction_model_info.feature_size {
             Ok(feature_size)
@@ -164,21 +159,24 @@ impl InstructionModel {
     }
 
     /// Validates that the specified feature size exactly fills one or more complete input buffers.
-    fn validate_feature_size(feature_size: usize, buffer_sizes: &[usize]) -> Result<()> {
+    fn validate_feature_size(
+        feature_size: usize,
+        buffer_sizes: &[usize],
+    ) -> std::result::Result<(), InvalidFeatureSizeError> {
         let mut accumulated = 0;
         let mut accumulated_capacities = Vec::new();
 
         for &capacity in buffer_sizes {
             accumulated += capacity;
             accumulated_capacities.push(accumulated);
-            if accumulated == feature_size {
-                return Ok(());
-            } else if accumulated > feature_size {
-                break;
+            match accumulated.cmp(&feature_size) {
+                std::cmp::Ordering::Equal => return Ok(()),
+                std::cmp::Ordering::Greater => break,
+                std::cmp::Ordering::Less => {}
             }
         }
 
-        Err(InstructionModelError::InvalidFeatureSize {
+        Err(InvalidFeatureSizeError {
             expected: feature_size,
             actual: accumulated,
             capacities: accumulated_capacities,
@@ -236,22 +234,43 @@ impl InstructionModel {
             &instruction_model_info.computation_buffer_sizes,
         )?;
 
-        if let Some(validation_data) = &instruction_model_info.validation_data {
-            if validation_data.inputs.len() != validation_data.expected_outputs.len() {
-                return Err(InstructionModelError::ValidationInputOutputMismatch);
-            }
-        }
-
+        Self::validate_validation_data_lengths(instruction_model_info.validation_data.as_ref())?;
         Ok(())
     }
 
     /// Validate if the model required memory is within the maximum allowed.
-    fn validate_required_memory(output_index_end: usize) -> Result<()> {
+    fn validate_required_memory(
+        output_index_end: usize,
+    ) -> std::result::Result<(), ComputationBufferSizeExceedsLimitError> {
         if output_index_end > MAX_COMPUTATION_BUFFER_SIZE {
-            return Err(InstructionModelError::ComputationBufferSizeExceedsLimit {
+            return Err(ComputationBufferSizeExceedsLimitError {
                 actual: output_index_end,
                 max: MAX_COMPUTATION_BUFFER_SIZE,
             });
+        }
+        Ok(())
+    }
+
+    /// Validates that declared feature size matches computed size.
+    fn validate_declared_feature_size(
+        declared: Option<usize>,
+        computed: usize,
+    ) -> std::result::Result<(), FeatureSizeMismatchError> {
+        if let Some(expected) = declared.filter(|&fs| fs != computed) {
+            return Err(FeatureSizeMismatchError {
+                expected,
+                actual: computed,
+            });
+        }
+        Ok(())
+    }
+
+    /// Validates that validation data has matching input/output lengths.
+    fn validate_validation_data_lengths(
+        validation_data: Option<&crate::instruction_model_info::ValidationData>,
+    ) -> std::result::Result<(), ValidationInputOutputMismatchError> {
+        if validation_data.is_some_and(|vd| vd.inputs.len() != vd.expected_outputs.len()) {
+            return Err(ValidationInputOutputMismatchError);
         }
         Ok(())
     }
@@ -264,8 +283,7 @@ impl InstructionModel {
         let input_layer_size = computation_buffer_sizes[0];
         let mut index = input_layer_size;
 
-        for i in 1..computation_buffer_sizes.len() {
-            let computation_buffer_size = computation_buffer_sizes[i];
+        for &computation_buffer_size in computation_buffer_sizes.iter().skip(1) {
             if computation_buffer_size == 0 {
                 return Err(InstructionModelError::InvalidLayerSize);
             }
@@ -360,9 +378,13 @@ impl InstructionModel {
     }
 
     /// Validates buffer index.
-    fn validate_buffer_index(label: &str, buffer_index: usize, max_size: usize) -> Result<()> {
+    fn validate_buffer_index(
+        label: &str,
+        buffer_index: usize,
+        max_size: usize,
+    ) -> std::result::Result<(), BufferIndexOutOfBoundsError> {
         if buffer_index >= max_size {
-            return Err(InstructionModelError::BufferIndexOutOfBounds {
+            return Err(BufferIndexOutOfBoundsError {
                 label: label.to_string(),
                 index: buffer_index,
             });
@@ -721,7 +743,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result,
-            Err(InstructionModelError::InvalidFeatureSize {
+            Err(InvalidFeatureSizeError {
                 expected: 5,
                 actual: 4,
                 ..
@@ -983,7 +1005,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result,
-            Err(InstructionModelError::BufferIndexOutOfBounds { label, index: 5 }) if label == "test"
+            Err(BufferIndexOutOfBoundsError { label, index: 5 }) if label == "test"
         ));
     }
 }

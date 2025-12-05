@@ -20,10 +20,7 @@ impl ConfigLoader {
     pub fn load_config<T: serde::de::DeserializeOwned + Default>(
         path: &str,
         config_name: &str,
-    ) -> BenchmarkResult<T>
-    where
-        T: Default,
-    {
+    ) -> BenchmarkResult<T> {
         match fs::read_to_string(path) {
             Ok(content) => {
                 serde_json::from_str(&content).map_err(|e| BenchmarkError::ConfigParseError {

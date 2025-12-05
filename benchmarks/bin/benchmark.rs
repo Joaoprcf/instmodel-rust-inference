@@ -1,6 +1,5 @@
 //! Main benchmark CLI executable.
 
-use env_logger;
 use instmodel_inference::benchmarks::{BenchmarkResult, BenchmarkRunner};
 use log::error;
 use std::env;

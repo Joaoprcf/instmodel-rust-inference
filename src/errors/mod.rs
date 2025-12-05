@@ -7,7 +7,10 @@
 mod instruction_model_error;
 mod validation_error;
 
-pub use instruction_model_error::InstructionModelError;
+pub use instruction_model_error::{
+    BufferIndexOutOfBoundsError, ComputationBufferSizeExceedsLimitError, FeatureSizeMismatchError,
+    InstructionModelError, InvalidFeatureSizeError, ValidationInputOutputMismatchError,
+};
 pub use validation_error::ValidationError;
 
 /// Result type alias for operations that may fail with neural inference errors.

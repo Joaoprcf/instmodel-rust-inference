@@ -1,5 +1,8 @@
 use crate::benchmarks::benchmark_types::DotProductConfig;
 
+/// Type alias for dot product test data: (weights_layer1, bias_layer1, weights_layer2, bias_layer2, inputs)
+pub type DotProductTestData = (Vec<Vec<f32>>, Vec<f32>, Vec<Vec<f32>>, Vec<f32>, Vec<f32>);
+
 /// Manual implementation of the dot product neural network benchmark.
 pub struct ManualDotProduct {
     weights_layer1: Vec<Vec<f32>>,
@@ -18,7 +21,7 @@ impl ManualDotProduct {
         weights_layer2: Vec<Vec<f32>>,
         bias_layer2: Vec<f32>,
     ) -> Self {
-        let input_size = weights_layer1.get(0).map_or(0, |row| row.len());
+        let input_size = weights_layer1.first().map_or(0, |row| row.len());
         let hidden_size = weights_layer1.len();
         let output_size = weights_layer2.len();
 
@@ -75,9 +78,7 @@ impl ManualDotProduct {
 }
 
 /// Creates deterministic test data for the dot product benchmark.
-pub fn create_dot_product_test_data(
-    config: &DotProductConfig,
-) -> (Vec<Vec<f32>>, Vec<f32>, Vec<Vec<f32>>, Vec<f32>, Vec<f32>) {
+pub fn create_dot_product_test_data(config: &DotProductConfig) -> DotProductTestData {
     let input_size = config.network_config.input_size;
     let hidden_size = config.network_config.hidden_size;
     let output_size = config.network_config.output_size;

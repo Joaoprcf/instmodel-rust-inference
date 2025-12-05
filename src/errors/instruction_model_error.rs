@@ -2,6 +2,46 @@
 
 use thiserror::Error;
 
+/// Specific error for feature size mismatch between declared and computed values.
+#[derive(Error, Debug)]
+#[error("Feature size mismatch: expected {expected} but got {actual} from features")]
+pub struct FeatureSizeMismatchError {
+    pub expected: usize,
+    pub actual: usize,
+}
+
+/// Specific error for validation data input/output length mismatch.
+#[derive(Error, Debug)]
+#[error("The number of inputs must match the number of outputs in the validation data")]
+pub struct ValidationInputOutputMismatchError;
+
+/// Specific error for invalid feature size that doesn't match buffer boundaries.
+#[derive(Error, Debug)]
+#[error(
+    "Invalid feature size: expected cumulative capacity {expected} but got {actual}: {capacities:?}"
+)]
+pub struct InvalidFeatureSizeError {
+    pub expected: usize,
+    pub actual: usize,
+    pub capacities: Vec<usize>,
+}
+
+/// Specific error for computation buffer size exceeding maximum allowed.
+#[derive(Error, Debug)]
+#[error("The computation buffer array size exceeds the maximum allowed elements: {actual} > {max}")]
+pub struct ComputationBufferSizeExceedsLimitError {
+    pub actual: usize,
+    pub max: usize,
+}
+
+/// Specific error for buffer index out of bounds.
+#[derive(Error, Debug)]
+#[error("The {label} {index} must be within the layer sizes")]
+pub struct BufferIndexOutOfBoundsError {
+    pub label: String,
+    pub index: usize,
+}
+
 /// Errors that can occur during instruction model creation, validation, or execution.
 #[derive(Error, Debug)]
 pub enum InstructionModelError {
@@ -253,4 +293,47 @@ pub enum InstructionModelError {
 
     #[error("The number of inputs must match the number of outputs")]
     InputOutputCountMismatch,
+}
+
+impl From<FeatureSizeMismatchError> for InstructionModelError {
+    fn from(e: FeatureSizeMismatchError) -> Self {
+        InstructionModelError::FeatureSizeMismatch {
+            expected: e.expected,
+            actual: e.actual,
+        }
+    }
+}
+
+impl From<ValidationInputOutputMismatchError> for InstructionModelError {
+    fn from(_: ValidationInputOutputMismatchError) -> Self {
+        InstructionModelError::ValidationInputOutputMismatch
+    }
+}
+
+impl From<InvalidFeatureSizeError> for InstructionModelError {
+    fn from(e: InvalidFeatureSizeError) -> Self {
+        InstructionModelError::InvalidFeatureSize {
+            expected: e.expected,
+            actual: e.actual,
+            capacities: e.capacities,
+        }
+    }
+}
+
+impl From<ComputationBufferSizeExceedsLimitError> for InstructionModelError {
+    fn from(e: ComputationBufferSizeExceedsLimitError) -> Self {
+        InstructionModelError::ComputationBufferSizeExceedsLimit {
+            actual: e.actual,
+            max: e.max,
+        }
+    }
+}
+
+impl From<BufferIndexOutOfBoundsError> for InstructionModelError {
+    fn from(e: BufferIndexOutOfBoundsError) -> Self {
+        InstructionModelError::BufferIndexOutOfBounds {
+            label: e.label,
+            index: e.index,
+        }
+    }
 }

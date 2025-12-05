@@ -4,7 +4,7 @@ use super::benchmark_errors::{BenchmarkError, BenchmarkResult};
 use serde::{Deserialize, Serialize};
 
 /// Configuration for dot product neural network benchmark
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DotProductConfig {
     pub name: String,
     pub description: String,
@@ -21,7 +21,7 @@ pub struct NetworkConfig {
 }
 
 /// Configuration for element-wise operations benchmark
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ElementWiseOpsConfig {
     pub name: String,
     pub description: String,
@@ -38,9 +38,8 @@ pub enum BenchmarkConfig {
     ElementWiseOps(ElementWiseOpsConfig),
 }
 
-impl DotProductConfig {
-    /// Creates default configuration for dot product benchmark
-    pub fn default() -> Self {
+impl Default for DotProductConfig {
+    fn default() -> Self {
         Self {
             name: "dot_product".to_string(),
             description: "Neural network with dot product operations".to_string(),
@@ -52,7 +51,9 @@ impl DotProductConfig {
             num_executions: 1000,
         }
     }
+}
 
+impl DotProductConfig {
     /// Validates the configuration
     pub fn validate(&self) -> BenchmarkResult<()> {
         if self.num_executions == 0 {
@@ -86,9 +87,8 @@ impl DotProductConfig {
     }
 }
 
-impl ElementWiseOpsConfig {
-    /// Creates default configuration for element-wise operations benchmark
-    pub fn default() -> Self {
+impl Default for ElementWiseOpsConfig {
+    fn default() -> Self {
         Self {
             name: "element_wise_ops".to_string(),
             description: "Element-wise addition and multiplication operations".to_string(),
@@ -98,7 +98,9 @@ impl ElementWiseOpsConfig {
             num_executions: 1000,
         }
     }
+}
 
+impl ElementWiseOpsConfig {
     /// Validates the configuration
     pub fn validate(&self) -> BenchmarkResult<()> {
         if self.num_executions == 0 {
@@ -114,7 +116,7 @@ impl ElementWiseOpsConfig {
             });
         }
 
-        for (_i, &size) in self.buffer_sizes.iter().enumerate() {
+        for &size in self.buffer_sizes.iter() {
             if size == 0 {
                 return Err(BenchmarkError::InvalidBufferSize { size });
             }

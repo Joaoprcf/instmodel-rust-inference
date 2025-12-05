@@ -3,7 +3,7 @@
 //! This binary measures the performance of the instruction-based neural network framework
 //! against manual implementations to understand the overhead and efficiency characteristics.
 
-use env_logger;
+use instmodel_inference::benchmarks::instructions::dot_product::manual::DotProductTestData;
 use instmodel_inference::instruction_model_info::*;
 use instmodel_inference::{Activation, InstructionModel};
 use log::{error, info};
@@ -121,7 +121,7 @@ impl PerformanceResults {
     }
 }
 
-fn create_test_data() -> (Vec<Vec<f32>>, Vec<f32>, Vec<Vec<f32>>, Vec<f32>, Vec<f32>) {
+fn create_test_data() -> DotProductTestData {
     // Create weights for layer 1: 10000 outputs x 2 inputs
     let weights_layer1: Vec<Vec<f32>> = (0..10000)
         .map(|i| vec![0.1 + (i as f32) * 0.0001, 0.2 + (i as f32) * 0.0001])
