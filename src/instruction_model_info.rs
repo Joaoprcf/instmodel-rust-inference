@@ -82,6 +82,17 @@ impl InstructionInfo {
             InstructionInfo::Attention(info) => info.output,
         }
     }
+
+    /// Returns true if this instruction can write to a partial region of its output buffer.
+    /// These instructions use internal_index or similar mechanisms to write to specific offsets.
+    pub fn supports_partial_write(&self) -> bool {
+        matches!(
+            self,
+            InstructionInfo::Copy(_)
+                | InstructionInfo::CopyMasked(_)
+                | InstructionInfo::MapTransform(_)
+        )
+    }
 }
 
 /// Represents a dot product operation instruction.

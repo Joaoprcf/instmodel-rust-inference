@@ -9,12 +9,13 @@ mod validation_error;
 
 pub use instruction_model_error::{
     BufferIndexOutOfBoundsError, ComputationBufferSizeExceedsLimitError, FeatureSizeMismatchError,
-    InstructionModelError, InvalidFeatureSizeError, ValidationInputOutputMismatchError,
+    InstructionModelError, InvalidFeatureSizeError, UnusedComputationError,
+    ValidationInputOutputMismatchError,
 };
 pub use validation_error::ValidationError;
 
 /// Result type alias for operations that may fail with neural inference errors.
-pub type Result<T> = std::result::Result<T, InstructionModelError>;
+pub type InstructionModelResult<T> = std::result::Result<T, InstructionModelError>;
 
 /// Result type alias for validation operations.
 pub type ValidationResult<T> = std::result::Result<T, ValidationError>;

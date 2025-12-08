@@ -6,8 +6,10 @@
 
 use crate::errors::{
     BufferIndexOutOfBoundsError, ComputationBufferSizeExceedsLimitError, FeatureSizeMismatchError,
-    InstructionModelError, InvalidFeatureSizeError, Result, ValidationInputOutputMismatchError,
+    InstructionModelError, InstructionModelResult, InvalidFeatureSizeError,
+    ValidationInputOutputMismatchError,
 };
+use crate::high_performance_execution_utils::ParallelExecutionGraph;
 use crate::instruction_model_info::InstructionModelInfo;
 use crate::instructions::{Instruction, create_instruction};
 
@@ -27,11 +29,12 @@ pub struct InstructionModel {
     computation_buffer_indexes: Vec<usize>,
     output_index_start: usize,
     output_index_end: usize,
+    parallel_graph: ParallelExecutionGraph,
 }
 
 impl InstructionModel {
     /// Creates a new InstructionModel from InstructionModelInfo.
-    pub fn new(instruction_model_info: InstructionModelInfo) -> Result<Self> {
+    pub fn new(instruction_model_info: InstructionModelInfo) -> InstructionModelResult<Self> {
         Self::validate_inputs(&instruction_model_info)?;
 
         let computation_buffer_sizes = instruction_model_info.computation_buffer_sizes.clone();
@@ -54,6 +57,12 @@ impl InstructionModel {
             &computation_buffer_sizes,
         )?;
 
+        // Build parallel execution graph
+        let parallel_graph = ParallelExecutionGraph::build(
+            &instruction_model_info.instructions,
+            computation_buffer_sizes.len(),
+        )?;
+
         let mut model = InstructionModel {
             instructions,
             feature_size,
@@ -61,6 +70,7 @@ impl InstructionModel {
             computation_buffer_indexes,
             output_index_start,
             output_index_end,
+            parallel_graph,
         };
 
         // Validate with provided validation data
@@ -80,7 +90,7 @@ impl InstructionModel {
         computation_buffer_sizes: Vec<usize>,
         instructions: Vec<Box<dyn Instruction>>,
         feature_size: usize,
-    ) -> Result<Self> {
+    ) -> InstructionModelResult<Self> {
         if computation_buffer_sizes.is_empty() {
             return Err(InstructionModelError::NoLayersProvided);
         }
@@ -94,6 +104,14 @@ impl InstructionModel {
         let output_index_start =
             output_index_end - computation_buffer_sizes[computation_buffer_sizes.len() - 1];
 
+        // For test models, create an empty parallel graph
+        let parallel_graph = ParallelExecutionGraph {
+            nodes: Vec::new(),
+            root_indices: Vec::new(),
+            is_parallelizable: false,
+            buffer_last_nodes: Vec::new(),
+        };
+
         Ok(InstructionModel {
             instructions,
             feature_size,
@@ -101,11 +119,14 @@ impl InstructionModel {
             computation_buffer_indexes,
             output_index_start,
             output_index_end,
+            parallel_graph,
         })
     }
 
     /// Computes the total feature size based on the provided instruction model information.
-    pub fn calculate_feature_size(instruction_model_info: &InstructionModelInfo) -> Result<usize> {
+    pub fn calculate_feature_size(
+        instruction_model_info: &InstructionModelInfo,
+    ) -> InstructionModelResult<usize> {
         if let Some(features) = &instruction_model_info.features {
             let mut total_size = 0;
             for feature in features {
@@ -184,7 +205,9 @@ impl InstructionModel {
     }
 
     /// Performs basic initial validation of the inputs of the model.
-    fn validate_inputs(instruction_model_info: &InstructionModelInfo) -> Result<()> {
+    fn validate_inputs(
+        instruction_model_info: &InstructionModelInfo,
+    ) -> InstructionModelResult<()> {
         if instruction_model_info.features.is_none()
             && instruction_model_info.feature_size.is_none()
         {
@@ -278,7 +301,7 @@ impl InstructionModel {
     fn calculate_computation_buffer_indexes(
         computation_buffer_sizes: &[usize],
         computation_buffer_indexes: &mut Vec<usize>,
-    ) -> Result<usize> {
+    ) -> InstructionModelResult<usize> {
         computation_buffer_indexes.push(0);
         let input_layer_size = computation_buffer_sizes[0];
         let mut index = input_layer_size;
@@ -302,7 +325,7 @@ impl InstructionModel {
         instruction_model_info: &InstructionModelInfo,
         computation_buffer_indexes: &[usize],
         computation_buffer_sizes: &[usize],
-    ) -> Result<Vec<Box<dyn Instruction>>> {
+    ) -> InstructionModelResult<Vec<Box<dyn Instruction>>> {
         let weights = &instruction_model_info.weights;
         let bias = &instruction_model_info.bias;
         let parameters = instruction_model_info.parameters.as_deref().unwrap_or(&[]);
@@ -398,7 +421,7 @@ impl InstructionModel {
         inputs: &[Vec<f32>],
         outputs: &[Vec<f32>],
         delta: f32,
-    ) -> Result<()> {
+    ) -> InstructionModelResult<()> {
         if inputs.len() != outputs.len() {
             return Err(InstructionModelError::InputOutputCountMismatch);
         }
@@ -455,7 +478,10 @@ impl InstructionModel {
     }
 
     /// Predicts output using the provided computation buffer.
-    pub fn predict_with_buffer(&self, unified_computation_buffer: &mut [f32]) -> Result<()> {
+    pub fn predict_with_buffer(
+        &self,
+        unified_computation_buffer: &mut [f32],
+    ) -> InstructionModelResult<()> {
         if unified_computation_buffer.len() < self.output_index_end {
             return Err(InstructionModelError::ComputationBufferTooSmall {
                 buffer_size: unified_computation_buffer.len(),
@@ -471,7 +497,7 @@ impl InstructionModel {
     }
 
     /// Predicts output, allocating a new computation buffer.
-    pub fn predict(&self, input: &[f32]) -> Result<Vec<f32>> {
+    pub fn predict(&self, input: &[f32]) -> InstructionModelResult<Vec<f32>> {
         if input.len() != self.feature_size {
             return Err(InstructionModelError::ValidationInputSizeMismatch {
                 provided: input.len(),
@@ -499,7 +525,7 @@ impl InstructionModel {
     }
 
     /// Predicts a single output value.
-    pub fn predict_single(&self, input: &[f32]) -> Result<f32> {
+    pub fn predict_single(&self, input: &[f32]) -> InstructionModelResult<f32> {
         let output = self.predict(input)?;
         Ok(output[output.len() - 1])
     }
@@ -532,6 +558,16 @@ impl InstructionModel {
     /// Returns the computation buffer indexes.
     pub fn get_computation_buffer_indexes(&self) -> &[usize] {
         &self.computation_buffer_indexes
+    }
+
+    /// Returns whether the model can benefit from parallel execution.
+    pub fn is_parallelizable(&self) -> bool {
+        self.parallel_graph.is_parallelizable
+    }
+
+    /// Returns a reference to the parallel execution graph.
+    pub fn get_parallel_graph(&self) -> &ParallelExecutionGraph {
+        &self.parallel_graph
     }
 }
 

@@ -42,6 +42,17 @@ pub struct BufferIndexOutOfBoundsError {
     pub index: usize,
 }
 
+/// Specific error for unused computation (dead code in model definition).
+#[derive(Error, Debug)]
+#[error(
+    "Instruction {instruction_index} wrote to buffer {buffer_index} but it was overwritten by instruction {overwritten_by} before being read"
+)]
+pub struct UnusedComputationError {
+    pub instruction_index: usize,
+    pub buffer_index: usize,
+    pub overwritten_by: usize,
+}
+
 /// Errors that can occur during instruction model creation, validation, or execution.
 #[derive(Error, Debug)]
 pub enum InstructionModelError {
@@ -293,6 +304,15 @@ pub enum InstructionModelError {
 
     #[error("The number of inputs must match the number of outputs")]
     InputOutputCountMismatch,
+
+    #[error(
+        "Instruction {instruction_index} wrote to buffer {buffer_index} but it was overwritten by instruction {overwritten_by} before being read"
+    )]
+    UnusedComputation {
+        instruction_index: usize,
+        buffer_index: usize,
+        overwritten_by: usize,
+    },
 }
 
 impl From<FeatureSizeMismatchError> for InstructionModelError {
@@ -334,6 +354,16 @@ impl From<BufferIndexOutOfBoundsError> for InstructionModelError {
         InstructionModelError::BufferIndexOutOfBounds {
             label: e.label,
             index: e.index,
+        }
+    }
+}
+
+impl From<UnusedComputationError> for InstructionModelError {
+    fn from(e: UnusedComputationError) -> Self {
+        InstructionModelError::UnusedComputation {
+            instruction_index: e.instruction_index,
+            buffer_index: e.buffer_index,
+            overwritten_by: e.overwritten_by,
         }
     }
 }
