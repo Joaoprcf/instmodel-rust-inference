@@ -5,6 +5,7 @@
 //! error handling and debugging.
 
 mod instruction_model_error;
+mod parallel_predict_error;
 mod validation_error;
 
 pub use instruction_model_error::{
@@ -12,6 +13,7 @@ pub use instruction_model_error::{
     InstructionModelError, InvalidFeatureSizeError, UnusedComputationError,
     ValidationInputOutputMismatchError,
 };
+pub use parallel_predict_error::{ParallelPredictError, ParallelPredictResult};
 pub use validation_error::ValidationError;
 
 /// Result type alias for operations that may fail with neural inference errors.

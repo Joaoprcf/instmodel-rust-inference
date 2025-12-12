@@ -35,7 +35,7 @@ pub use reduce_sum_instruction::ReduceSumInstruction;
 /// All instructions have default information about the output pointer and the data size.
 /// These are essential to any operation as they represent the minimum information needed
 /// to identify where the result of the operation will be stored.
-pub trait Instruction {
+pub trait Instruction: Send + Sync {
     /// Returns the output pointer that represents the first index in the buffer to copy to.
     fn output_ptr(&self) -> usize;
 

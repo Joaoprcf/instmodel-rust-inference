@@ -6,12 +6,13 @@
 
 use crate::errors::{
     BufferIndexOutOfBoundsError, ComputationBufferSizeExceedsLimitError, FeatureSizeMismatchError,
-    InstructionModelError, InstructionModelResult, InvalidFeatureSizeError,
+    InstructionModelError, InstructionModelResult, InvalidFeatureSizeError, ParallelPredictResult,
     ValidationInputOutputMismatchError,
 };
 use crate::high_performance_execution_utils::ParallelExecutionGraph;
 use crate::instruction_model_info::InstructionModelInfo;
 use crate::instructions::{Instruction, create_instruction};
+use crate::parallel_predict::{ParallelPredictOutput, PredictConfig, execute_parallel_predict};
 
 /// Maximum computation buffer size (default configuration)
 const MAX_COMPUTATION_BUFFER_SIZE: usize = 1_000_000;
@@ -528,6 +529,15 @@ impl InstructionModel {
     pub fn predict_single(&self, input: &[f32]) -> InstructionModelResult<f32> {
         let output = self.predict(input)?;
         Ok(output[output.len() - 1])
+    }
+
+    /// Predicts outputs for multiple samples in parallel.
+    pub fn predict_parallel(
+        &self,
+        inputs: &[f32],
+        config: PredictConfig,
+    ) -> ParallelPredictResult<ParallelPredictOutput> {
+        execute_parallel_predict(self, inputs, &config)
     }
 
     /// Gets the output value at a specific index.

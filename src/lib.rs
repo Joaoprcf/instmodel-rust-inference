@@ -10,6 +10,7 @@ pub mod high_performance_execution_utils;
 pub mod instruction_model;
 pub mod instruction_model_info;
 pub mod instructions;
+pub mod parallel_predict;
 pub mod utils;
 
 // Benchmarks module
@@ -18,3 +19,4 @@ pub mod benchmarks;
 pub use activation::Activation;
 pub use instruction_model::InstructionModel;
 pub use instruction_model_info::{InstructionModelInfo, ValidationData};
+pub use parallel_predict::{ParallelPredictOutput, PredictConfig};
