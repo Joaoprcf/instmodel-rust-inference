@@ -60,12 +60,57 @@ pub fn create_instruction(
 
     match instruction_info {
         InstructionInfo::Dot(info) => {
+            if info.input == info.output {
+                return Err(InstructionModelError::SameInputOutputIndexes {
+                    instruction_type: "DOT".to_string(),
+                });
+            }
+            if info.weights >= weights.len() {
+                return Err(InstructionModelError::WeightsIndexOutOfBounds {
+                    index: info.weights,
+                });
+            }
+
+            let weights_matrix = &weights[info.weights];
+            let bias_vector =
+                bias.get(info.weights)
+                    .ok_or(InstructionModelError::WeightsIndexOutOfBounds {
+                        index: info.weights,
+                    })?;
+
+            let input_size = computation_buffer_sizes[info.input];
+            let output_size = computation_buffer_sizes[info.output];
+
+            if weights_matrix.len() != output_size {
+                return Err(InstructionModelError::WeightsRowSizeMismatch {
+                    weights_rows: weights_matrix.len(),
+                    output_size,
+                });
+            }
+            if bias_vector.len() != output_size {
+                return Err(InstructionModelError::BiasOutputSizeMismatch {
+                    bias_index: info.weights,
+                    output_index: info.output,
+                    bias_size: bias_vector.len(),
+                    output_size,
+                });
+            }
+            for row in weights_matrix {
+                if row.len() != input_size {
+                    return Err(InstructionModelError::WeightsColumnSizeMismatch {
+                        input_index: info.input,
+                        weights_columns: row.len(),
+                        input_size,
+                    });
+                }
+            }
+
             let instruction = DotInstruction::new(
                 computation_buffer_indexes[info.input],
                 computation_buffer_indexes[info.output],
                 computation_buffer_sizes[info.output],
-                &weights[info.weights],
-                &bias[info.weights],
+                weights_matrix,
+                bias_vector,
                 info.activation,
             )?;
             Ok(Box::new(instruction))
@@ -155,13 +200,61 @@ pub fn create_instruction(
             Ok(Box::new(instruction))
         }
         InstructionInfo::Attention(info) => {
+            if info.weights >= weights.len() {
+                return Err(InstructionModelError::WeightsIndexOutOfBounds {
+                    index: info.weights,
+                });
+            }
+
+            let weights_matrix = &weights[info.weights];
+            let bias_vector =
+                bias.get(info.weights)
+                    .ok_or(InstructionModelError::WeightsIndexOutOfBounds {
+                        index: info.weights,
+                    })?;
+
+            let query_size = computation_buffer_sizes[info.input];
+            let key_size = computation_buffer_sizes[info.key];
+            let output_size = computation_buffer_sizes[info.output];
+
+            if query_size != output_size {
+                return Err(InstructionModelError::InputBufferSizeMismatch {
+                    index: info.input,
+                    actual_size: query_size,
+                    expected_size: output_size,
+                });
+            }
+            if weights_matrix.len() != output_size {
+                return Err(InstructionModelError::WeightsRowSizeMismatch {
+                    weights_rows: weights_matrix.len(),
+                    output_size,
+                });
+            }
+            if bias_vector.len() != output_size {
+                return Err(InstructionModelError::BiasOutputSizeMismatch {
+                    bias_index: info.weights,
+                    output_index: info.output,
+                    bias_size: bias_vector.len(),
+                    output_size,
+                });
+            }
+            for row in weights_matrix {
+                if row.len() != key_size {
+                    return Err(InstructionModelError::WeightsColumnSizeMismatch {
+                        input_index: info.key,
+                        weights_columns: row.len(),
+                        input_size: key_size,
+                    });
+                }
+            }
+
             let instruction = AttentionInstruction::new(
                 computation_buffer_indexes[info.input],
                 computation_buffer_indexes[info.key],
                 computation_buffer_indexes[info.output],
                 computation_buffer_sizes[info.output],
-                &weights[info.weights],
-                &bias[info.weights],
+                weights_matrix,
+                bias_vector,
             );
             Ok(Box::new(instruction))
         }

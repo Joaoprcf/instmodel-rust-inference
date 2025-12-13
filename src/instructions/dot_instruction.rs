@@ -5,19 +5,22 @@
 
 use crate::activation::Activation;
 use crate::errors::InstructionModelError;
-use crate::instructions::{Instruction, activation_instruction::ActivationInstruction};
+use crate::instructions::Instruction;
+use crate::utils::dot::{DotKernel, dot};
 
 /// Instruction that performs a dense (matrix-vector) operation followed by bias and activation.
 ///
-/// The implementation focuses on minimizing repeated bounds calculations inside the hot loop while
-/// keeping the code safe (no `unsafe` blocks).
+/// This implementation flattens the weight matrix and uses a runtime-selected SIMD kernel
+/// (AVX512/AVX2 + FMA when available) to minimize overhead in the hot loop.
 pub struct DotInstruction {
-    weights: Vec<Vec<f32>>,
+    weights: Vec<f32>,
     bias: Vec<f32>,
     input_ptr: usize,
     output_ptr: usize,
     data_size: usize,
-    activation_instruction: Option<ActivationInstruction>,
+    input_size: usize,
+    kernel: DotKernel,
+    activation: Option<Activation>,
 }
 
 impl DotInstruction {
@@ -30,32 +33,67 @@ impl DotInstruction {
         bias: &[f32],
         activation: Option<Activation>,
     ) -> Result<Self, InstructionModelError> {
-        let activation_instruction =
-            activation.map(|act| ActivationInstruction::new(act, output_ptr, data_size));
+        let input_size = weights.first().map_or(0, |row| row.len());
+        let mut flattened_weights = Vec::with_capacity(weights.len() * input_size);
+        for row in weights {
+            flattened_weights.extend_from_slice(row);
+        }
 
         Ok(Self {
-            weights: weights.to_vec(),
+            weights: flattened_weights,
             bias: bias.to_vec(),
             input_ptr,
             output_ptr,
             data_size,
-            activation_instruction,
+            input_size,
+            kernel: DotKernel::detect(),
+            activation,
         })
     }
 
     #[inline(always)]
     fn apply_forward_pass(&self, unified_computation_buffer: &mut [f32]) {
-        let input_start = self.input_ptr;
-        let output_start = self.output_ptr;
+        let row_stride = self.input_size;
+        let kernel = self.kernel;
 
-        for (row_index, (weights_row, &bias_value)) in
-            self.weights.iter().zip(self.bias.iter()).enumerate()
+        let input_end = self.input_ptr + self.input_size;
+        let output_end = self.output_ptr + self.data_size;
+
+        let (input_slice, output_slice) = if self.input_ptr < self.output_ptr {
+            debug_assert!(input_end <= self.output_ptr);
+            let (before_output, output_and_after) =
+                unified_computation_buffer.split_at_mut(self.output_ptr);
+            (
+                &before_output[self.input_ptr..input_end],
+                &mut output_and_after[..self.data_size],
+            )
+        } else {
+            debug_assert!(output_end <= self.input_ptr);
+            let (before_input, input_and_after) =
+                unified_computation_buffer.split_at_mut(self.input_ptr);
+            (
+                &input_and_after[..self.input_size],
+                &mut before_input[self.output_ptr..output_end],
+            )
+        };
+
+        debug_assert_eq!(input_slice.len(), self.input_size);
+        debug_assert_eq!(output_slice.len(), self.data_size);
+
+        let input_ptr = input_slice.as_ptr();
+        let weights_rows = self.weights.chunks_exact(row_stride);
+        debug_assert!(weights_rows.remainder().is_empty());
+
+        for ((out, &bias_value), weights_row) in output_slice
+            .iter_mut()
+            .zip(self.bias.iter())
+            .zip(weights_rows)
         {
-            let mut sum = bias_value;
-            for (col_index, &weight) in weights_row.iter().enumerate() {
-                sum += weight * unified_computation_buffer[input_start + col_index];
-            }
-            unified_computation_buffer[output_start + row_index] = sum;
+            *out = dot(kernel, weights_row.as_ptr(), input_ptr, row_stride) + bias_value;
+        }
+
+        if let Some(activation) = self.activation {
+            activation.apply_in_place(output_slice);
         }
     }
 }
@@ -71,11 +109,6 @@ impl Instruction for DotInstruction {
 
     fn apply(&self, unified_computation_buffer: &mut [f32]) -> Result<(), InstructionModelError> {
         self.apply_forward_pass(unified_computation_buffer);
-
-        if let Some(ref activation_instruction) = self.activation_instruction {
-            activation_instruction.apply(unified_computation_buffer)?;
-        }
-
         Ok(())
     }
 }

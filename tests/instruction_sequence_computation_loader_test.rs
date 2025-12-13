@@ -1,7 +1,6 @@
 //! Tests for instruction sequence computation loading from JSON.
 
 use instmodel_inference::{InstructionModel, InstructionModelInfo};
-use serde_json;
 use std::collections::HashMap;
 
 const JSON_MODEL_CONFIG: &str = r#"
@@ -87,8 +86,8 @@ fn create_instruction_model_from_json() {
     assert_eq!(instruction_model_info.features.as_ref().unwrap().len(), 2);
     assert_eq!(instruction_model_info.computation_buffer_sizes.len(), 5);
     assert_eq!(instruction_model_info.instructions.len(), 8);
-    assert!(instruction_model_info.weights.len() > 0);
-    assert!(instruction_model_info.bias.len() > 0);
+    assert!(!instruction_model_info.weights.is_empty());
+    assert!(!instruction_model_info.bias.is_empty());
     assert_eq!(instruction_model_info.weights.len(), 2);
     assert_eq!(instruction_model_info.bias.len(), 2);
     assert!(instruction_model_info.parameters.is_some());

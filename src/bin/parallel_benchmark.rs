@@ -2,38 +2,39 @@ use instmodel_inference::instruction_model_info::{DotInstructionInfo, Instructio
 use instmodel_inference::{Activation, InstructionModel, InstructionModelInfo, PredictConfig};
 use std::time::Instant;
 
+const INPUT_SIZE: usize = 250;
+const HIDDEN_SIZE: usize = 300;
+const OUTPUT_SIZE: usize = 200;
+const NUM_SAMPLES: usize = 200_000;
+
 fn create_benchmark_model() -> InstructionModel {
-    let input_size = 300;
-    let hidden_size = 500;
-    let output_size = 5;
-
-    let weights_layer0: Vec<Vec<f32>> = (0..hidden_size)
+    let weights_layer0: Vec<Vec<f32>> = (0..HIDDEN_SIZE)
         .map(|i| {
-            (0..input_size)
-                .map(|j| ((i * input_size + j) as f32 * 0.001).sin() * 0.1)
+            (0..INPUT_SIZE)
+                .map(|j| ((i * INPUT_SIZE + j) as f32 * 0.001).sin() * 0.1)
                 .collect()
         })
         .collect();
 
-    let weights_layer1: Vec<Vec<f32>> = (0..output_size)
+    let weights_layer1: Vec<Vec<f32>> = (0..OUTPUT_SIZE)
         .map(|i| {
-            (0..hidden_size)
-                .map(|j| ((i * hidden_size + j) as f32 * 0.002).cos() * 0.1)
+            (0..HIDDEN_SIZE)
+                .map(|j| ((i * HIDDEN_SIZE + j) as f32 * 0.002).cos() * 0.1)
                 .collect()
         })
         .collect();
 
-    let bias_layer0: Vec<f32> = (0..hidden_size)
+    let bias_layer0: Vec<f32> = (0..HIDDEN_SIZE)
         .map(|i| (i as f32 * 0.01).sin() * 0.01)
         .collect();
-    let bias_layer1: Vec<f32> = (0..output_size)
+    let bias_layer1: Vec<f32> = (0..OUTPUT_SIZE)
         .map(|i| (i as f32 * 0.01).cos() * 0.01)
         .collect();
 
     let model_info = InstructionModelInfo {
         features: None,
-        feature_size: Some(input_size),
-        computation_buffer_sizes: vec![input_size, hidden_size, output_size],
+        feature_size: Some(INPUT_SIZE),
+        computation_buffer_sizes: vec![INPUT_SIZE, HIDDEN_SIZE, OUTPUT_SIZE],
         instructions: vec![
             InstructionInfo::Dot(DotInstructionInfo {
                 input: 0,
@@ -66,11 +67,14 @@ fn generate_inputs(num_samples: usize, feature_size: usize) -> Vec<f32> {
 
 fn main() {
     let model = create_benchmark_model();
-    let num_samples = 50_000;
+    let num_samples = NUM_SAMPLES;
     let feature_size = model.get_feature_size();
     let output_size = model.get_output_size();
 
-    println!("Model: {} -> {} -> {}", feature_size, 500, output_size);
+    println!(
+        "Model: {} -> {} -> {}",
+        feature_size, HIDDEN_SIZE, output_size
+    );
     println!("Samples: {}", num_samples);
     println!(
         "Required memory per inference: {} f32 values",
@@ -86,12 +90,19 @@ fn main() {
     // Sequential benchmark
     println!("Running sequential inference...");
     let start = Instant::now();
+    let output_start = model.get_output_index_start();
+    let mut sequential_buffer = vec![0.0f32; model.required_memory()];
     let mut sequential_results = Vec::with_capacity(num_samples * output_size);
     for i in 0..num_samples {
         let input_start = i * feature_size;
         let input_end = input_start + feature_size;
-        let result = model.predict(&inputs[input_start..input_end]).unwrap();
-        sequential_results.extend(result);
+        sequential_buffer[feature_size..].fill(0.0f32);
+        sequential_buffer[..feature_size].copy_from_slice(&inputs[input_start..input_end]);
+        model
+            .predict_with_buffer(sequential_buffer.as_mut_slice())
+            .unwrap();
+        sequential_results
+            .extend_from_slice(&sequential_buffer[output_start..output_start + output_size]);
     }
     let sequential_duration = start.elapsed();
     println!(

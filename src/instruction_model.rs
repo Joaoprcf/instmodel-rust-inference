@@ -20,6 +20,11 @@ const MAX_COMPUTATION_BUFFER_SIZE: usize = 1_000_000;
 /// Maximum weight size (default configuration)  
 const MAX_WEIGHT_SIZE: usize = 10_000_000;
 
+thread_local! {
+    static PREDICT_SCRATCH_BUFFER: std::cell::RefCell<Vec<f32>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// Represents a model that is configured to follow optimized computation following a sequence of instructions.
 /// This model configuration can be represented via a JSON file that corresponds to an InstructionModelInfo record.
 /// The model is generally used as an inference computation engine generated from a trained neural network.
@@ -506,23 +511,22 @@ impl InstructionModel {
             });
         }
 
-        let mut unified_computation_buffer = vec![0.0f32; self.output_index_end];
-
-        // Copy input to buffer
-        for (i, &value) in input.iter().enumerate() {
-            unified_computation_buffer[i] = value;
-        }
-
-        self.predict_with_buffer(&mut unified_computation_buffer)?;
-
-        // Extract output
         let output_size = self.computation_buffer_sizes[self.computation_buffer_sizes.len() - 1];
-        let mut result = vec![0.0f32; output_size];
-        for i in 0..output_size {
-            result[i] = unified_computation_buffer[self.output_index_start + i];
-        }
 
-        Ok(result)
+        PREDICT_SCRATCH_BUFFER.with(|scratch| {
+            let mut scratch_buffer = scratch.borrow_mut();
+            if scratch_buffer.len() < self.output_index_end {
+                scratch_buffer.resize(self.output_index_end, 0.0f32);
+            }
+            scratch_buffer[..self.output_index_end].fill(0.0f32);
+            scratch_buffer[..self.feature_size].copy_from_slice(input);
+
+            self.predict_with_buffer(scratch_buffer.as_mut_slice())?;
+
+            let output_start = self.output_index_start;
+            let output_end = output_start + output_size;
+            Ok(scratch_buffer[output_start..output_end].to_vec())
+        })
     }
 
     /// Predicts a single output value.

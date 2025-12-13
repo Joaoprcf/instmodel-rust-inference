@@ -7,6 +7,7 @@
 
 use crate::errors::InstructionModelError;
 use crate::instructions::Instruction;
+use crate::utils::dot::{DotKernel, dot};
 
 /// Instruction that performs a softmax attention operation.
 ///
@@ -18,8 +19,10 @@ pub struct AttentionInstruction {
     key_ptr: usize,
     output_ptr: usize,
     data_size: usize,
-    weights: Vec<Vec<f32>>,
+    key_size: usize,
+    weights: Vec<f32>,
     bias: Vec<f32>,
+    kernel: DotKernel,
 }
 
 impl AttentionInstruction {
@@ -31,29 +34,38 @@ impl AttentionInstruction {
         weights: &[Vec<f32>],
         bias: &[f32],
     ) -> Self {
+        let key_size = weights.first().map_or(0, |row| row.len());
+        let mut flattened_weights = Vec::with_capacity(weights.len() * key_size);
+        for row in weights {
+            flattened_weights.extend_from_slice(row);
+        }
+
         Self {
             query_ptr,
             key_ptr,
             output_ptr,
             data_size,
-            weights: weights.to_vec(),
+            key_size,
+            weights: flattened_weights,
             bias: bias.to_vec(),
+            kernel: DotKernel::detect(),
         }
     }
 
     #[inline(always)]
     fn apply_linear_transform(&self, buffer: &mut [f32]) {
-        let key_start = self.key_ptr;
-        let output_start = self.output_ptr;
+        let key_ptr = unsafe { buffer.as_ptr().add(self.key_ptr) };
+        let output_ptr = unsafe { buffer.as_mut_ptr().add(self.output_ptr) };
+        let weights_ptr = self.weights.as_ptr();
+        let bias = &self.bias;
+        let row_stride = self.key_size;
+        let kernel = self.kernel;
 
-        for (row_index, (weights_row, &bias_value)) in
-            self.weights.iter().zip(self.bias.iter()).enumerate()
-        {
-            let mut sum = bias_value;
-            for (col_index, &weight) in weights_row.iter().enumerate() {
-                sum += weight * buffer[key_start + col_index];
-            }
-            buffer[output_start + row_index] = sum;
+        for row in 0..self.data_size {
+            let row_weights_ptr = unsafe { weights_ptr.add(row * row_stride) };
+            let acc = dot(kernel, row_weights_ptr, key_ptr, row_stride)
+                + unsafe { *bias.get_unchecked(row) };
+            unsafe { *output_ptr.add(row) = acc };
         }
     }
 

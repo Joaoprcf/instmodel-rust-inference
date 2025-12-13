@@ -38,6 +38,41 @@ pub enum Activation {
     Inverse,
 }
 
+#[inline(always)]
+fn relu(x: f32) -> f32 {
+    x.max(0.0)
+}
+
+#[inline(always)]
+fn sigmoid(x: f32) -> f32 {
+    1.0 / (1.0 + (-x).exp())
+}
+
+#[inline(always)]
+fn sqrt_activation(x: f32) -> f32 {
+    if x > 0.0 { x.sqrt() } else { 0.0 }
+}
+
+#[inline(always)]
+fn log_activation(x: f32) -> f32 {
+    if x > 0.0 { (x + 1.0).ln() } else { 0.0 }
+}
+
+#[inline(always)]
+fn log10_activation(x: f32) -> f32 {
+    if x > 0.0 { (x + 1.0).log10() } else { 0.0 }
+}
+
+#[inline(always)]
+fn tanh_activation(x: f32) -> f32 {
+    x.tanh()
+}
+
+#[inline(always)]
+fn inverse_activation(x: f32) -> f32 {
+    1.0 - x
+}
+
 impl Activation {
     /// Get activation by string name.
     pub fn get_by_name(type_name: &str) -> Option<Self> {
@@ -61,31 +96,13 @@ impl Activation {
     /// Apply the activation function to a single value.
     pub fn apply_single(self, x: f32) -> f32 {
         match self {
-            Activation::Relu => x.max(0.0),
-            Activation::Sigmoid => 1.0 / (1.0 + (-x).exp()),
-            Activation::Sqrt => {
-                if x > 0.0 {
-                    x.sqrt()
-                } else {
-                    0.0
-                }
-            }
-            Activation::Log => {
-                if x > 0.0 {
-                    (x + 1.0).ln()
-                } else {
-                    0.0
-                }
-            }
-            Activation::Log10 => {
-                if x > 0.0 {
-                    (x + 1.0).log10()
-                } else {
-                    0.0
-                }
-            }
-            Activation::Tanh => x.tanh(),
-            Activation::Inverse => 1.0 - x,
+            Activation::Relu => relu(x),
+            Activation::Sigmoid => sigmoid(x),
+            Activation::Sqrt => sqrt_activation(x),
+            Activation::Log => log_activation(x),
+            Activation::Log10 => log10_activation(x),
+            Activation::Tanh => tanh_activation(x),
+            Activation::Inverse => inverse_activation(x),
             Activation::Softmax => {
                 // Softmax for a single value doesn't make much sense, but we'll return exp(x)
                 // The proper softmax should be applied to a vector
@@ -113,10 +130,39 @@ impl Activation {
                     *val /= sum;
                 }
             }
-            _ => {
-                // For other activations, apply element-wise
+            Activation::Relu => {
                 for val in values.iter_mut() {
-                    *val = self.apply_single(*val);
+                    *val = relu(*val);
+                }
+            }
+            Activation::Sigmoid => {
+                for val in values.iter_mut() {
+                    *val = sigmoid(*val);
+                }
+            }
+            Activation::Sqrt => {
+                for val in values.iter_mut() {
+                    *val = sqrt_activation(*val);
+                }
+            }
+            Activation::Log => {
+                for val in values.iter_mut() {
+                    *val = log_activation(*val);
+                }
+            }
+            Activation::Log10 => {
+                for val in values.iter_mut() {
+                    *val = log10_activation(*val);
+                }
+            }
+            Activation::Tanh => {
+                for val in values.iter_mut() {
+                    *val = tanh_activation(*val);
+                }
+            }
+            Activation::Inverse => {
+                for val in values.iter_mut() {
+                    *val = inverse_activation(*val);
                 }
             }
         }

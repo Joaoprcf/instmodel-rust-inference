@@ -20,11 +20,38 @@ instmodel_inference = "<version>"
 This library provides a lightweight, zero-dependency neural network inference engine. Models are defined as a sequence of instructions that operate on computation buffers, enabling efficient memory reuse and predictable performance.
 
 **Key Features:**
+
 - Instruction-based execution model for neural network inference
 - Support for common neural network operations (dot product, activations, attention, etc.)
 - JSON serialization/deserialization for model configuration
 - Built-in model validation
 - Memory-efficient unified buffer architecture
+
+## Benchmarks
+
+These benchmarks measure a simple 2-layer dense network:
+
+- Model: `250 -> 300 -> 200` (`ReLU` then `Sigmoid`)
+- Samples: `200_000`
+- Warmup: included (Rust runs 1 warmup inference; TensorFlow runs 1 warmup `predict` on the first batch)
+
+### Results (CPU: AMD Ryzen 9 5900HX)
+
+| Implementation                     |   Time | Inferences/sec |
+| ---------------------------------- | -----: | -------------: |
+| Rust (sequential)                  | 2.914s |      68,626.51 |
+| Rust (parallel, default threads)   | 0.405s |     493,923.43 |
+| TensorFlow CPU (`batch_size=8192`) | 0.596s |     335,664.65 |
+
+### How to run
+
+```bash
+# Rust
+cargo run --release --bin parallel_benchmark
+
+# TensorFlow (CPU)
+python3 benchmarks/tensorflow_benchmark.py
+```
 
 ## Quick Start
 
@@ -210,32 +237,32 @@ let model = InstructionModel::new(model_info)?;
 
 ### Activation Functions
 
-| Activation | Description |
-|------------|-------------|
-| `Relu` | f(x) = max(0, x) |
-| `Sigmoid` | f(x) = 1 / (1 + exp(-x)) |
-| `Softmax` | Numerically stable softmax over a buffer |
-| `Tanh` | f(x) = tanh(x) |
-| `Sqrt` | f(x) = sqrt(x) for x > 0, else 0 |
-| `Log` | f(x) = ln(x + 1) for x > 0, else 0 |
-| `Log10` | f(x) = log10(x + 1) for x > 0, else 0 |
-| `Inverse` | f(x) = 1 - x |
+| Activation | Description                              |
+| ---------- | ---------------------------------------- |
+| `Relu`     | f(x) = max(0, x)                         |
+| `Sigmoid`  | f(x) = 1 / (1 + exp(-x))                 |
+| `Softmax`  | Numerically stable softmax over a buffer |
+| `Tanh`     | f(x) = tanh(x)                           |
+| `Sqrt`     | f(x) = sqrt(x) for x > 0, else 0         |
+| `Log`      | f(x) = ln(x + 1) for x > 0, else 0       |
+| `Log10`    | f(x) = log10(x + 1) for x > 0, else 0    |
+| `Inverse`  | f(x) = 1 - x                             |
 
 ### Instruction Types
 
-| Instruction | JSON Type | Description |
-|-------------|-----------|-------------|
-| Dot Product | `DOT` | Matrix multiplication with optional activation |
-| Copy | `COPY` | Copy buffer contents to another location |
-| Copy Masked | `COPY_MASKED` | Copy specific indices from a buffer |
-| Activation | `ACTIVATION` | Apply activation function in-place |
-| Element-wise Add | `ADD_ELEMENTWISE` | Add parameters element-wise |
-| Element-wise Multiply | `MUL_ELEMENTWISE` | Multiply by parameters element-wise |
-| Buffers Add | `ADD_ELEMENTWISE_BUFFERS` | Sum multiple buffers |
-| Buffers Multiply | `MULTIPLY_ELEMENTWISE_BUFFERS` | Multiply multiple buffers element-wise |
-| Reduce Sum | `REDUCE_SUM` | Sum all values in a buffer to a single value |
-| Attention | `ATTENTION` | Attention mechanism (linear + softmax + element-wise) |
-| Map Transform | `MAP_TRANSFORM` | Lookup and transform using a map |
+| Instruction           | JSON Type                      | Description                                           |
+| --------------------- | ------------------------------ | ----------------------------------------------------- |
+| Dot Product           | `DOT`                          | Matrix multiplication with optional activation        |
+| Copy                  | `COPY`                         | Copy buffer contents to another location              |
+| Copy Masked           | `COPY_MASKED`                  | Copy specific indices from a buffer                   |
+| Activation            | `ACTIVATION`                   | Apply activation function in-place                    |
+| Element-wise Add      | `ADD_ELEMENTWISE`              | Add parameters element-wise                           |
+| Element-wise Multiply | `MUL_ELEMENTWISE`              | Multiply by parameters element-wise                   |
+| Buffers Add           | `ADD_ELEMENTWISE_BUFFERS`      | Sum multiple buffers                                  |
+| Buffers Multiply      | `MULTIPLY_ELEMENTWISE_BUFFERS` | Multiply multiple buffers element-wise                |
+| Reduce Sum            | `REDUCE_SUM`                   | Sum all values in a buffer to a single value          |
+| Attention             | `ATTENTION`                    | Attention mechanism (linear + softmax + element-wise) |
+| Map Transform         | `MAP_TRANSFORM`                | Lookup and transform using a map                      |
 
 ## Advanced Usage
 
