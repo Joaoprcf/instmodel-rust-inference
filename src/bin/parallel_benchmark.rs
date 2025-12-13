@@ -65,24 +65,52 @@ fn generate_inputs(num_samples: usize, feature_size: usize) -> Vec<f32> {
         .collect()
 }
 
+fn format_bytes(bytes: usize) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.2} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.2} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
 fn main() {
+    let num_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+
     let model = create_benchmark_model();
     let num_samples = NUM_SAMPLES;
     let feature_size = model.get_feature_size();
     let output_size = model.get_output_size();
+    let required_memory = model.required_memory();
 
     println!(
         "Model: {} -> {} -> {}",
         feature_size, HIDDEN_SIZE, output_size
     );
     println!("Samples: {}", num_samples);
-    println!(
-        "Required memory per inference: {} f32 values",
-        model.required_memory()
-    );
+    println!("Threads: {}", num_threads);
     println!();
 
     let inputs = generate_inputs(num_samples, feature_size);
+    let input_bytes = inputs.len() * std::mem::size_of::<f32>();
+
+    // Model memory (weights + bias)
+    let weights_bytes =
+        (INPUT_SIZE * HIDDEN_SIZE + HIDDEN_SIZE * OUTPUT_SIZE) * std::mem::size_of::<f32>();
+    let bias_bytes = (HIDDEN_SIZE + OUTPUT_SIZE) * std::mem::size_of::<f32>();
+    let model_bytes = weights_bytes + bias_bytes;
+
+    // Memory calculations
+    let seq_compute_bytes = required_memory * std::mem::size_of::<f32>();
+    let seq_results_bytes = num_samples * output_size * std::mem::size_of::<f32>();
+    let seq_total_bytes = input_bytes + seq_compute_bytes + seq_results_bytes;
+
+    let par_compute_bytes = num_threads * required_memory * std::mem::size_of::<f32>();
+    let par_output_bytes = num_samples * output_size * std::mem::size_of::<f32>();
+    let par_total_bytes = input_bytes + par_compute_bytes + par_output_bytes;
 
     // Warmup
     let _ = model.predict(&inputs[..feature_size]);
@@ -137,4 +165,21 @@ fn main() {
     // Speedup
     let speedup = sequential_duration.as_secs_f64() / parallel_duration.as_secs_f64();
     println!("\nSpeedup: {:.3}x", speedup);
+
+    // Memory footprint
+    println!("\n=== Memory Footprint ===");
+    println!("Model (weights+bias): {}", format_bytes(model_bytes));
+    println!("Input buffer:         {}", format_bytes(input_bytes));
+    println!(
+        "Sequential:           {} (compute: {}, results: {})",
+        format_bytes(seq_total_bytes),
+        format_bytes(seq_compute_bytes),
+        format_bytes(seq_results_bytes)
+    );
+    println!(
+        "Parallel:             {} (compute: {}, output: {})",
+        format_bytes(par_total_bytes),
+        format_bytes(par_compute_bytes),
+        format_bytes(par_output_bytes)
+    );
 }

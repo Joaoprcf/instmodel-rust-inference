@@ -32,16 +32,29 @@ This library provides a lightweight, zero-dependency neural network inference en
 These benchmarks measure a simple 2-layer dense network:
 
 - Model: `250 -> 300 -> 200` (`ReLU` then `Sigmoid`)
-- Samples: `200_000`
-- Warmup: included (Rust runs 1 warmup inference; TensorFlow runs 1 warmup `predict` on the first batch)
+- Samples: `200,000`
+- Threads: `16` (8 physical cores + hyperthreading)
+- Warmup: included
 
-### Results (CPU: AMD Ryzen 9 5900HX)
+### Performance (CPU: AMD Ryzen 9 5900HX)
 
-| Implementation                     |   Time | Inferences/sec |
-| ---------------------------------- | -----: | -------------: |
-| Rust (sequential)                  | 2.914s |      68,626.51 |
-| Rust (parallel, default threads)   | 0.405s |     493,923.43 |
-| TensorFlow CPU (`batch_size=8192`) | 0.596s |     335,664.65 |
+| Implementation                     |       Time | Inferences/sec |
+| ---------------------------------- | ---------: | -------------: |
+| Rust (sequential)                  |     2.686s |         74,460 |
+| Rust (parallel, default threads)   | **0.355s** |        563,516 |
+| TensorFlow CPU (`batch_size=8192`) |     0.458s |        436,261 |
+
+### Memory Footprint
+
+| Implementation | Model (weights+bias) | Input + Output | Compute Buffers |    Total |
+| -------------- | -------------------: | -------------: | --------------: | -------: |
+| Rust (seq)     |             529.3 KB |       343.3 MB |      **2.9 KB** | 343.8 MB |
+| Rust (par)     |             529.3 KB |       343.3 MB |     **46.9 KB** | 343.9 MB |
+| TensorFlow     |             529.3 KB |       343.3 MB |     **23.4 MB** | 367.3 MB |
+
+Model weights are shared across all threads/batches (not replicated). Rust parallel uses 16× more compute buffer memory than sequential (one buffer per thread), but still 500× less than TensorFlow's batch buffer.
+
+**Note:** On smaller models or fewer inferences, TensorFlow's performance degrades significantly due to Python/framework overhead, JIT compilation, and batch scheduling. Rust maintains consistent low-latency performance regardless of scale.
 
 ### How to run
 
@@ -287,6 +300,42 @@ for input in inputs {
     // Read output
     let output = model.get_output(&buffer, 0);
 }
+```
+
+### Parallel Prediction
+
+For batch inference across multiple threads:
+
+```rust
+use instmodel_inference::{InstructionModel, PredictConfig};
+
+let model = InstructionModel::new(model_info)?;
+
+// Flatten all inputs into a contiguous buffer
+// For 1000 samples with 250 features each:
+let inputs: Vec<f32> = samples.iter().flatten().copied().collect();
+
+// Default config uses all available CPU cores
+let config = PredictConfig::new();
+let result = model.predict_parallel(&inputs, config)?;
+
+// Access results
+let all_outputs = result.as_slice();
+let first_sample = result.get_result(0)?;
+
+// Copy to your own buffer
+let mut my_buffer = vec![0.0f32; result.len()];
+result.copy_results(&mut my_buffer)?;
+```
+
+With custom configuration:
+
+```rust
+let config = PredictConfig::new()
+    .with_threads(8)                    // Use 8 threads
+    .with_slice_result_buffer(0, 100);  // Only return first 100 samples
+
+let result = model.predict_parallel(&inputs, config)?;
 ```
 
 ### Model Validation
