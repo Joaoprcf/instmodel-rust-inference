@@ -6,6 +6,7 @@
 
 pub mod activation;
 pub mod errors;
+pub mod gpu;
 pub mod high_performance_execution_utils;
 pub mod instruction_model;
 pub mod instruction_model_info;

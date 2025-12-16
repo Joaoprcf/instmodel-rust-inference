@@ -338,6 +338,81 @@ let config = PredictConfig::new()
 let result = model.predict_parallel(&inputs, config)?;
 ```
 
+### GPU-Embeddable Inference (WGSL)
+
+The library provides GPU-embeddable inference functions in WGSL that can be called from within your own GPU compute shaders. This is particularly useful for RL simulations where each episode runs in its own GPU thread.
+
+**Rust Side - Prepare the model:**
+
+```rust
+use instmodel_inference::gpu::{GpuModel, get_instmodel_wgsl};
+
+// Convert your model to GPU format
+let gpu_model = GpuModel::from_info(&model_info)?;
+
+// Get the model data as bytes for GPU buffer
+let model_bytes = gpu_model.as_bytes();
+
+// Get WGSL shader code to include in your kernel
+let wgsl_functions = get_instmodel_wgsl(gpu_model.compute_buffer_size() as u32);
+```
+
+**WGSL Side - Use in your compute shader:**
+
+```wgsl
+// Your shader bindings
+@group(0) @binding(0) var<storage, read> model_data: array<f32>;
+@group(0) @binding(1) var<storage, read> inputs: array<f32>;
+@group(0) @binding(2) var<storage, read_write> outputs: array<f32>;
+
+// Include the generated instmodel functions (via string replacement at runtime)
+// This provides: predict(), get_feature_size(), get_output_size(), get_output_start()
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let thread_id = global_id.x;
+
+    // Each thread has its own compute buffer (function-local)
+    var compute_buffer: array<f32, 1024>;  // Size from gpu_model.compute_buffer_size()
+
+    // Model offset (0 for single model, or index into packed multi-model buffer)
+    let model_offset: u32 = 0u;
+
+    // Copy input to compute buffer
+    let feature_size = get_feature_size(model_offset);
+    let input_offset = thread_id * feature_size;
+    for (var i: u32 = 0u; i < feature_size; i = i + 1u) {
+        compute_buffer[i] = inputs[input_offset + i];
+    }
+
+    // Run inference - this executes all model instructions
+    predict(model_offset, &compute_buffer);
+
+    // Copy output from compute buffer
+    let output_start = get_output_start(model_offset);
+    let output_size = get_output_size(model_offset);
+    let output_offset = thread_id * output_size;
+    for (var i: u32 = 0u; i < output_size; i = i + 1u) {
+        outputs[output_offset + i] = compute_buffer[output_start + i];
+    }
+}
+```
+
+**Key GPU Functions Available:**
+
+| Function | Description |
+| --- | --- |
+| `predict(model_offset, &compute_buffer)` | Execute all model instructions |
+| `get_feature_size(model_offset)` | Get input feature count |
+| `get_output_size(model_offset)` | Get output size |
+| `get_output_start(model_offset)` | Get output position in compute buffer |
+| `get_compute_buffer_size(model_offset)` | Get required compute buffer size |
+| `get_full_model_size(model_offset)` | Get total model size (for multi-model packing) |
+
+**Why GPU-Embedded Inference?**
+
+For RL and simulation workloads, the model data stays on GPU and each thread can call `predict()` multiple times per episode without CPU<->GPU transfers. This eliminates transfer overhead and enables massive parallelism across episodes.
+
 ### Model Validation
 
 Include validation data to verify model correctness on creation:
