@@ -36,6 +36,9 @@ pub enum Activation {
     Tanh,
     /// Inverse activation function: f(x) = 1 - x.
     Inverse,
+    /// Gaussian Error Linear Unit: f(x) = x * 0.5 * (1 + erf(x / sqrt(2))).
+    /// Uses the exact erf formulation matching TensorFlow's default.
+    Gelu,
 }
 
 #[inline(always)]
@@ -73,6 +76,34 @@ fn inverse_activation(x: f32) -> f32 {
     1.0 - x
 }
 
+/// Compute the error function using the Abramowitz and Stegun approximation.
+/// Maximum error: ~1.5×10^-7
+#[inline(always)]
+fn erf(x: f32) -> f32 {
+    let sign = if x >= 0.0 { 1.0 } else { -1.0 };
+    let x = x.abs();
+
+    // Abramowitz and Stegun formula 7.1.26
+    const A1: f32 = 0.254_829_6;
+    const A2: f32 = -0.284_496_72;
+    const A3: f32 = 1.421_413_8;
+    const A4: f32 = -1.453_152_1;
+    const A5: f32 = 1.061_405_4;
+    const P: f32 = 0.327_591_1;
+
+    let t = 1.0 / (1.0 + P * x);
+    let y = 1.0 - (((((A5 * t + A4) * t) + A3) * t + A2) * t + A1) * t * (-x * x).exp();
+
+    sign * y
+}
+
+/// GeLU activation: f(x) = x * 0.5 * (1 + erf(x / sqrt(2)))
+#[inline(always)]
+fn gelu_activation(x: f32) -> f32 {
+    const SQRT_2_INV: f32 = std::f32::consts::FRAC_1_SQRT_2; // 1 / sqrt(2)
+    x * 0.5 * (1.0 + erf(x * SQRT_2_INV))
+}
+
 impl Activation {
     /// Get activation by string name.
     pub fn get_by_name(type_name: &str) -> Option<Self> {
@@ -85,6 +116,7 @@ impl Activation {
             ("LOG10", Activation::Log10),
             ("TANH", Activation::Tanh),
             ("INVERSE", Activation::Inverse),
+            ("GELU", Activation::Gelu),
         ]
         .iter()
         .cloned()
@@ -103,6 +135,7 @@ impl Activation {
             Activation::Log10 => log10_activation(x),
             Activation::Tanh => tanh_activation(x),
             Activation::Inverse => inverse_activation(x),
+            Activation::Gelu => gelu_activation(x),
             Activation::Softmax => {
                 // Softmax for a single value doesn't make much sense, but we'll return exp(x)
                 // The proper softmax should be applied to a vector
@@ -163,6 +196,11 @@ impl Activation {
             Activation::Inverse => {
                 for val in values.iter_mut() {
                     *val = inverse_activation(*val);
+                }
+            }
+            Activation::Gelu => {
+                for val in values.iter_mut() {
+                    *val = gelu_activation(*val);
                 }
             }
         }
@@ -236,6 +274,31 @@ mod tests {
     }
 
     #[test]
+    fn test_gelu() {
+        // GeLU(x) = x * 0.5 * (1 + erf(x / sqrt(2)))
+        // Expected values computed from TensorFlow/NumPy with higher precision
+        const GELU_DELTA: f32 = 0.001;
+        assert!((Activation::Gelu.apply_single(-2.0) - (-0.0454)).abs() < GELU_DELTA);
+        assert!((Activation::Gelu.apply_single(-1.0) - (-0.1587)).abs() < GELU_DELTA);
+        assert!((Activation::Gelu.apply_single(0.0) - 0.0).abs() < DELTA);
+        assert!((Activation::Gelu.apply_single(1.0) - 0.8413).abs() < GELU_DELTA);
+        assert!((Activation::Gelu.apply_single(2.0) - 1.9545).abs() < GELU_DELTA);
+    }
+
+    #[test]
+    fn test_gelu_in_place() {
+        let mut values = [-2.0, -1.0, 0.0, 1.0, 2.0];
+        Activation::Gelu.apply_in_place(&mut values);
+
+        const GELU_DELTA: f32 = 0.001;
+        assert!((values[0] - (-0.0454)).abs() < GELU_DELTA);
+        assert!((values[1] - (-0.1587)).abs() < GELU_DELTA);
+        assert!((values[2] - 0.0).abs() < DELTA);
+        assert!((values[3] - 0.8413).abs() < GELU_DELTA);
+        assert!((values[4] - 1.9545).abs() < GELU_DELTA);
+    }
+
+    #[test]
     fn test_get_by_name() {
         assert_eq!(Activation::get_by_name("RELU"), Some(Activation::Relu));
         assert_eq!(
@@ -246,6 +309,7 @@ mod tests {
             Activation::get_by_name("SOFTMAX"),
             Some(Activation::Softmax)
         );
+        assert_eq!(Activation::get_by_name("GELU"), Some(Activation::Gelu));
         assert_eq!(Activation::get_by_name("INVALID"), None);
     }
 }

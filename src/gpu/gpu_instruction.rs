@@ -22,6 +22,7 @@ pub mod activation_types {
     pub const LOG: u32 = 0x06;
     pub const LOG10: u32 = 0x07;
     pub const INVERSE: u32 = 0x08;
+    pub const GELU: u32 = 0x09;
 }
 
 /// Convert Activation enum to GPU activation type.
@@ -36,6 +37,7 @@ pub fn activation_to_gpu(activation: Option<Activation>) -> u32 {
         Some(Activation::Log) => activation_types::LOG,
         Some(Activation::Log10) => activation_types::LOG10,
         Some(Activation::Inverse) => activation_types::INVERSE,
+        Some(Activation::Gelu) => activation_types::GELU,
     }
 }
 
@@ -208,6 +210,10 @@ mod tests {
         assert_eq!(
             activation_to_gpu(Some(Activation::Inverse)),
             activation_types::INVERSE
+        );
+        assert_eq!(
+            activation_to_gpu(Some(Activation::Gelu)),
+            activation_types::GELU
         );
     }
 

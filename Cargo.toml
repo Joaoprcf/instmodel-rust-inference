@@ -1,6 +1,6 @@
 [package]
 name = "instmodel_inference"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 license = "MIT"
 description = "High-performance neural network inference library with instruction-based execution"
