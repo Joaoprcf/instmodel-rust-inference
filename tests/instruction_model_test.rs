@@ -1,10 +1,11 @@
 //! Comprehensive tests for the InstructionModel that match the Java implementation.
 
 use instmodel_inference::instruction_model_info::{
-    ActivationInstructionInfo, AttentionInstructionInfo, CopyInstructionInfo,
-    CopyMaskedInstructionInfo, DotInstructionInfo, ElemWiseAddInstructionInfo,
+    ActivationInstructionInfo, AddBufferHeadsInstructionInfo, AttentionInstructionInfo,
+    CopyInstructionInfo, CopyMaskedInstructionInfo, DotInstructionInfo, ElemWiseAddInstructionInfo,
     ElemWiseBuffersAddInstructionInfo, ElemWiseBuffersMulInstructionInfo,
-    ElemWiseMulInstructionInfo, InstructionInfo, ReduceSumInstructionInfo,
+    ElemWiseMulInstructionInfo, InstructionInfo, MultiplyBufferHeadsInstructionInfo,
+    ReduceSumInstructionInfo,
 };
 use instmodel_inference::{Activation, InstructionModel, InstructionModelInfo, ValidationData};
 
@@ -791,4 +792,240 @@ fn attention_in_complex_pipeline() {
         .predict_single(&inputs)
         .expect("Prediction should succeed");
     assert!((result - 2.0).abs() < DELTA);
+}
+
+#[test]
+fn multiply_buffer_heads() {
+    // Data buffer: 20 elements, Heads buffer: 4 elements, head_dim = 5
+    let layer_sizes = vec![20, 4, 20];
+
+    let instructions = vec![InstructionInfo::MultiplyBufferHeads(
+        MultiplyBufferHeadsInstructionInfo {
+            input: vec![0, 1],
+            output: 2,
+        },
+    )];
+
+    let model_info = InstructionModelInfo {
+        features: None,
+        feature_size: Some(24),
+        computation_buffer_sizes: layer_sizes,
+        instructions,
+        weights: vec![],
+        bias: vec![],
+        parameters: None,
+        maps: None,
+        validation_data: None,
+    };
+
+    let model = InstructionModel::new(model_info).expect("Model creation should succeed");
+
+    // Input: 20 ones + [2, 3, 4, 5] heads
+    let mut inputs = vec![1.0; 20];
+    inputs.extend_from_slice(&[2.0, 3.0, 4.0, 5.0]);
+
+    let result = model.predict(&inputs).expect("Prediction should succeed");
+
+    // Expected: first 5 * 2, next 5 * 3, next 5 * 4, last 5 * 5
+    let expected: Vec<f32> = vec![2.0; 5]
+        .into_iter()
+        .chain(vec![3.0; 5])
+        .chain(vec![4.0; 5])
+        .chain(vec![5.0; 5])
+        .collect();
+
+    assert_eq!(result.len(), expected.len());
+    for (i, (actual, exp)) in result.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - exp).abs() < DELTA,
+            "Mismatch at index {}: actual {} vs expected {}",
+            i,
+            actual,
+            exp
+        );
+    }
+}
+
+#[test]
+fn multiply_buffer_heads_with_varying_data() {
+    // Data buffer: 8 elements, Heads buffer: 2 elements, head_dim = 4
+    let layer_sizes = vec![8, 2, 8];
+
+    let instructions = vec![InstructionInfo::MultiplyBufferHeads(
+        MultiplyBufferHeadsInstructionInfo {
+            input: vec![0, 1],
+            output: 2,
+        },
+    )];
+
+    let model_info = InstructionModelInfo {
+        features: None,
+        feature_size: Some(10),
+        computation_buffer_sizes: layer_sizes,
+        instructions,
+        weights: vec![],
+        bias: vec![],
+        parameters: None,
+        maps: None,
+        validation_data: None,
+    };
+
+    let model = InstructionModel::new(model_info).expect("Model creation should succeed");
+
+    // Data: [1, 2, 3, 4, 5, 6, 7, 8], Heads: [2, -1]
+    let inputs = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 2.0, -1.0];
+    let result = model.predict(&inputs).expect("Prediction should succeed");
+
+    // First 4 * 2, next 4 * -1
+    let expected: Vec<f32> = vec![2.0, 4.0, 6.0, 8.0, -5.0, -6.0, -7.0, -8.0];
+    assert_eq!(result.len(), expected.len());
+    for (i, (actual, exp)) in result.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - exp).abs() < DELTA,
+            "Mismatch at index {}: actual {} vs expected {}",
+            i,
+            actual,
+            exp
+        );
+    }
+}
+
+#[test]
+fn add_buffer_heads() {
+    // Data buffer: 20 elements, Heads buffer: 4 elements, head_dim = 5
+    let layer_sizes = vec![20, 4, 20];
+
+    let instructions = vec![InstructionInfo::AddBufferHeads(
+        AddBufferHeadsInstructionInfo {
+            input: vec![0, 1],
+            output: 2,
+        },
+    )];
+
+    let model_info = InstructionModelInfo {
+        features: None,
+        feature_size: Some(24),
+        computation_buffer_sizes: layer_sizes,
+        instructions,
+        weights: vec![],
+        bias: vec![],
+        parameters: None,
+        maps: None,
+        validation_data: None,
+    };
+
+    let model = InstructionModel::new(model_info).expect("Model creation should succeed");
+
+    // Input: 20 zeros + [10, 20, 30, 40] heads
+    let mut inputs = vec![0.0; 20];
+    inputs.extend_from_slice(&[10.0, 20.0, 30.0, 40.0]);
+
+    let result = model.predict(&inputs).expect("Prediction should succeed");
+
+    // Expected: first 5 + 10, next 5 + 20, next 5 + 30, last 5 + 40
+    let expected: Vec<f32> = vec![10.0; 5]
+        .into_iter()
+        .chain(vec![20.0; 5])
+        .chain(vec![30.0; 5])
+        .chain(vec![40.0; 5])
+        .collect();
+
+    assert_eq!(result.len(), expected.len());
+    for (i, (actual, exp)) in result.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - exp).abs() < DELTA,
+            "Mismatch at index {}: actual {} vs expected {}",
+            i,
+            actual,
+            exp
+        );
+    }
+}
+
+#[test]
+fn add_buffer_heads_with_varying_data() {
+    // Data buffer: 6 elements, Heads buffer: 2 elements, head_dim = 3
+    let layer_sizes = vec![6, 2, 6];
+
+    let instructions = vec![InstructionInfo::AddBufferHeads(
+        AddBufferHeadsInstructionInfo {
+            input: vec![0, 1],
+            output: 2,
+        },
+    )];
+
+    let model_info = InstructionModelInfo {
+        features: None,
+        feature_size: Some(8),
+        computation_buffer_sizes: layer_sizes,
+        instructions,
+        weights: vec![],
+        bias: vec![],
+        parameters: None,
+        maps: None,
+        validation_data: None,
+    };
+
+    let model = InstructionModel::new(model_info).expect("Model creation should succeed");
+
+    // Data: [1, 2, 3, 4, 5, 6], Heads: [100, -50]
+    let inputs = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 100.0, -50.0];
+    let result = model.predict(&inputs).expect("Prediction should succeed");
+
+    // First 3 + 100, next 3 + -50
+    let expected: Vec<f32> = vec![101.0, 102.0, 103.0, -46.0, -45.0, -44.0];
+    assert_eq!(result.len(), expected.len());
+    for (i, (actual, exp)) in result.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - exp).abs() < DELTA,
+            "Mismatch at index {}: actual {} vs expected {}",
+            i,
+            actual,
+            exp
+        );
+    }
+}
+
+#[test]
+fn buffer_heads_in_pipeline() {
+    // Combine multiply/add buffer heads with other operations
+    // Data: 8, Heads: 2, head_dim = 4
+    let layer_sizes = vec![8, 2, 8, 1];
+
+    let instructions = vec![
+        // First multiply data by heads
+        InstructionInfo::MultiplyBufferHeads(MultiplyBufferHeadsInstructionInfo {
+            input: vec![0, 1],
+            output: 2,
+        }),
+        // Then reduce sum the result
+        InstructionInfo::ReduceSum(ReduceSumInstructionInfo {
+            input: 2,
+            output: 3,
+        }),
+    ];
+
+    let model_info = InstructionModelInfo {
+        features: None,
+        feature_size: Some(10),
+        computation_buffer_sizes: layer_sizes,
+        instructions,
+        weights: vec![],
+        bias: vec![],
+        parameters: None,
+        maps: None,
+        validation_data: None,
+    };
+
+    let model = InstructionModel::new(model_info).expect("Model creation should succeed");
+
+    // Data: [1, 1, 1, 1, 1, 1, 1, 1], Heads: [2, 3]
+    let inputs = vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 3.0];
+    let result = model
+        .predict_single(&inputs)
+        .expect("Prediction should succeed");
+
+    // After multiply: [2, 2, 2, 2, 3, 3, 3, 3]
+    // Sum: 2*4 + 3*4 = 8 + 12 = 20
+    assert!((result - 20.0).abs() < DELTA);
 }

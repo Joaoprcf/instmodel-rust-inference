@@ -219,6 +219,9 @@ pub enum InstructionModelError {
         expected_size: usize,
     },
 
+    #[error("Data buffer size ({data_size}) must be divisible by heads buffer size ({heads_size})")]
+    InvalidBufferHeadsSize { data_size: usize, heads_size: usize },
+
     #[error("The map index {index} must be within the number of maps")]
     MapIndexOutOfBounds { index: usize },
 

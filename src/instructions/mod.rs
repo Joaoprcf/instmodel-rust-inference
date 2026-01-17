@@ -7,6 +7,7 @@
 use crate::errors::InstructionModelError;
 
 pub mod activation_instruction;
+pub mod add_buffer_heads_instruction;
 pub mod attention_instruction;
 pub mod copy_instruction;
 pub mod copy_masked_instruction;
@@ -16,9 +17,11 @@ pub mod elem_wise_buffers_add_instruction;
 pub mod elem_wise_buffers_mul_instruction;
 pub mod elem_wise_mul_instruction;
 pub mod map_transform_instruction;
+pub mod multiply_buffer_heads_instruction;
 pub mod reduce_sum_instruction;
 
 pub use activation_instruction::ActivationInstruction;
+pub use add_buffer_heads_instruction::AddBufferHeadsInstruction;
 pub use attention_instruction::AttentionInstruction;
 pub use copy_instruction::CopyInstruction;
 pub use copy_masked_instruction::CopyMaskedInstruction;
@@ -28,6 +31,7 @@ pub use elem_wise_buffers_add_instruction::ElemWiseBuffersAddInstruction;
 pub use elem_wise_buffers_mul_instruction::ElemWiseBuffersMulInstruction;
 pub use elem_wise_mul_instruction::ElemWiseMulInstruction;
 pub use map_transform_instruction::MapTransformInstruction;
+pub use multiply_buffer_heads_instruction::MultiplyBufferHeadsInstruction;
 pub use reduce_sum_instruction::ReduceSumInstruction;
 
 /// Base trait for all instruction types.
@@ -256,6 +260,40 @@ pub fn create_instruction(
                 weights_matrix,
                 bias_vector,
             );
+            Ok(Box::new(instruction))
+        }
+        InstructionInfo::MultiplyBufferHeads(info) => {
+            if info.input.len() != 2 {
+                return Err(InstructionModelError::InsufficientInputBuffers);
+            }
+            let data_idx = info.input[0];
+            let heads_idx = info.input[1];
+            let data_ptr = computation_buffer_indexes[data_idx];
+            let heads_ptr = computation_buffer_indexes[heads_idx];
+            let output_ptr = computation_buffer_indexes[info.output];
+            let data_size = computation_buffer_sizes[data_idx];
+            let heads_size = computation_buffer_sizes[heads_idx];
+
+            let instruction = MultiplyBufferHeadsInstruction::new(
+                data_ptr, heads_ptr, output_ptr, data_size, heads_size,
+            )?;
+            Ok(Box::new(instruction))
+        }
+        InstructionInfo::AddBufferHeads(info) => {
+            if info.input.len() != 2 {
+                return Err(InstructionModelError::InsufficientInputBuffers);
+            }
+            let data_idx = info.input[0];
+            let heads_idx = info.input[1];
+            let data_ptr = computation_buffer_indexes[data_idx];
+            let heads_ptr = computation_buffer_indexes[heads_idx];
+            let output_ptr = computation_buffer_indexes[info.output];
+            let data_size = computation_buffer_sizes[data_idx];
+            let heads_size = computation_buffer_sizes[heads_idx];
+
+            let instruction = AddBufferHeadsInstruction::new(
+                data_ptr, heads_ptr, output_ptr, data_size, heads_size,
+            )?;
             Ok(Box::new(instruction))
         }
     }
