@@ -39,6 +39,9 @@ pub enum Activation {
     /// Gaussian Error Linear Unit: f(x) = x * 0.5 * (1 + erf(x / sqrt(2))).
     /// Uses the exact erf formulation matching TensorFlow's default.
     Gelu,
+    /// Softplus activation function: f(x) = log(1 + exp(x)).
+    /// Uses TensorFlow-compatible thresholding for numerical stability.
+    Softplus,
 }
 
 #[inline(always)]
@@ -104,6 +107,23 @@ fn gelu_activation(x: f32) -> f32 {
     x * 0.5 * (1.0 + erf(x * SQRT_2_INV))
 }
 
+/// Softplus activation with TensorFlow-compatible thresholding.
+/// - x > -threshold: return x (softplus ≈ x for large positive)
+/// - x < threshold: return exp(x) (softplus ≈ exp(x) for large negative)
+/// - otherwise: return ln_1p(exp(x))
+#[inline(always)]
+fn softplus_activation(x: f32) -> f32 {
+    // threshold = ln(f32::EPSILON) + 2 ≈ -13.9424
+    const THRESHOLD: f32 = -13.9424;
+    if x > -THRESHOLD {
+        x
+    } else if x < THRESHOLD {
+        x.exp()
+    } else {
+        x.exp().ln_1p() // ln(1 + exp(x)) with better precision
+    }
+}
+
 impl Activation {
     /// Get activation by string name.
     pub fn get_by_name(type_name: &str) -> Option<Self> {
@@ -117,6 +137,7 @@ impl Activation {
             ("TANH", Activation::Tanh),
             ("INVERSE", Activation::Inverse),
             ("GELU", Activation::Gelu),
+            ("SOFTPLUS", Activation::Softplus),
         ]
         .iter()
         .cloned()
@@ -136,6 +157,7 @@ impl Activation {
             Activation::Tanh => tanh_activation(x),
             Activation::Inverse => inverse_activation(x),
             Activation::Gelu => gelu_activation(x),
+            Activation::Softplus => softplus_activation(x),
             Activation::Softmax => {
                 // Softmax for a single value doesn't make much sense, but we'll return exp(x)
                 // The proper softmax should be applied to a vector
@@ -201,6 +223,11 @@ impl Activation {
             Activation::Gelu => {
                 for val in values.iter_mut() {
                     *val = gelu_activation(*val);
+                }
+            }
+            Activation::Softplus => {
+                for val in values.iter_mut() {
+                    *val = softplus_activation(*val);
                 }
             }
         }
@@ -310,6 +337,40 @@ mod tests {
             Some(Activation::Softmax)
         );
         assert_eq!(Activation::get_by_name("GELU"), Some(Activation::Gelu));
+        assert_eq!(
+            Activation::get_by_name("SOFTPLUS"),
+            Some(Activation::Softplus)
+        );
         assert_eq!(Activation::get_by_name("INVALID"), None);
+    }
+
+    #[test]
+    fn test_softplus() {
+        const SOFTPLUS_DELTA: f32 = 1e-7;
+
+        // softplus(x) = log(1 + exp(x))
+        // At x=0: log(2) = 0.6931471805599453
+        assert!((Activation::Softplus.apply_single(0.0) - 0.6931472).abs() < SOFTPLUS_DELTA);
+        // At x=1: log(1 + e) = 1.3132616875182228 (f32 rounds to 1.3132616)
+        assert!((Activation::Softplus.apply_single(1.0) - 1.3132616).abs() < SOFTPLUS_DELTA);
+        // At x=-1: log(1 + 1/e) = 0.31326168751822286
+        assert!((Activation::Softplus.apply_single(-1.0) - 0.3132617).abs() < SOFTPLUS_DELTA);
+        // Large positive: should return x exactly
+        assert!((Activation::Softplus.apply_single(100.0) - 100.0).abs() < SOFTPLUS_DELTA);
+        // Large negative: should return ~0 (exp(-100) underflows)
+        assert!(Activation::Softplus.apply_single(-100.0) < SOFTPLUS_DELTA);
+    }
+
+    #[test]
+    fn test_softplus_in_place() {
+        const SOFTPLUS_DELTA: f32 = 1e-7;
+        let mut values = [-100.0, -1.0, 0.0, 1.0, 100.0];
+        Activation::Softplus.apply_in_place(&mut values);
+
+        assert!(values[0] < SOFTPLUS_DELTA); // ~0
+        assert!((values[1] - 0.3132617).abs() < SOFTPLUS_DELTA);
+        assert!((values[2] - 0.6931472).abs() < SOFTPLUS_DELTA);
+        assert!((values[3] - 1.3132616).abs() < SOFTPLUS_DELTA);
+        assert!((values[4] - 100.0).abs() < SOFTPLUS_DELTA);
     }
 }
