@@ -49,6 +49,8 @@ pub enum InstructionInfo {
     ReduceSum(ReduceSumInstructionInfo),
     #[serde(rename = "ATTENTION")]
     Attention(AttentionInstructionInfo),
+    #[serde(rename = "CLIP_ELEMENTWISE")]
+    ElemWiseClip(ElemWiseClipInstructionInfo),
 }
 
 impl InstructionInfo {
@@ -68,6 +70,7 @@ impl InstructionInfo {
             InstructionInfo::AddBufferHeads(info) => info.input.clone(),
             InstructionInfo::ReduceSum(info) => vec![info.input],
             InstructionInfo::Attention(info) => vec![info.input, info.key],
+            InstructionInfo::ElemWiseClip(info) => vec![info.input],
         }
     }
 
@@ -88,6 +91,7 @@ impl InstructionInfo {
             InstructionInfo::AddBufferHeads(info) => info.output,
             InstructionInfo::ReduceSum(info) => info.output,
             InstructionInfo::Attention(info) => info.output,
+            InstructionInfo::ElemWiseClip(info) => info.input, // In-place operation
         }
     }
 
@@ -164,6 +168,19 @@ pub struct ElemWiseMulInstructionInfo {
     pub input: usize,
     /// Number of parameters for the element-wise operation.
     pub parameters: usize,
+}
+
+/// Represents an element-wise clipping operation with optional min/max parameters.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ElemWiseClipInstructionInfo {
+    /// Input index of the target buffer.
+    pub input: usize,
+    /// Index of the minimum parameter vector (optional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters_min: Option<usize>,
+    /// Index of the maximum parameter vector (optional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters_max: Option<usize>,
 }
 
 /// Represents a map transform operation instruction.

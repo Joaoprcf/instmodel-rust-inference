@@ -4,7 +4,8 @@ use instmodel_inference::instruction_model_info::{
     ActivationInstructionInfo, AddBufferHeadsInstructionInfo, AttentionInstructionInfo,
     CopyInstructionInfo, CopyMaskedInstructionInfo, DotInstructionInfo, ElemWiseAddInstructionInfo,
     ElemWiseBuffersAddInstructionInfo, ElemWiseBuffersMulInstructionInfo,
-    ElemWiseMulInstructionInfo, InstructionInfo, MultiplyBufferHeadsInstructionInfo,
+    ElemWiseClipInstructionInfo, ElemWiseMulInstructionInfo, InstructionInfo,
+    MultiplyBufferHeadsInstructionInfo,
     ReduceSumInstructionInfo,
 };
 use instmodel_inference::{Activation, InstructionModel, InstructionModelInfo, ValidationData};
@@ -363,6 +364,81 @@ fn element_wise() {
     assert!((result[0] - 0.0).abs() < DELTA);
     assert!((result[1] - 1.0).abs() < DELTA);
     assert!((result[2] - 3.5).abs() < DELTA);
+}
+
+#[test]
+fn element_wise_clip() {
+    // Test both bounds
+    let model_info = InstructionModelInfo {
+        features: Some(vec!["f1".to_string(), "f2".to_string(), "f3".to_string()]),
+        feature_size: None,
+        computation_buffer_sizes: vec![3],
+        instructions: vec![InstructionInfo::ElemWiseClip(ElemWiseClipInstructionInfo {
+            input: 0,
+            parameters_min: Some(0),
+            parameters_max: Some(1),
+        })],
+        weights: vec![],
+        bias: vec![],
+        parameters: Some(vec![
+            vec![0.0, -1.0, 0.5],
+            vec![1.0, 2.0, 3.0],
+        ]),
+        maps: None,
+        validation_data: None,
+    };
+
+    let model = InstructionModel::new(model_info).expect("Model creation should succeed");
+    let result = model.predict(&[-2.0, 5.0, 1.0]).expect("Prediction should succeed");
+    assert!((result[0] - 0.0).abs() < DELTA);   // max(-2, 0) then min(0, 1) = 0
+    assert!((result[1] - 2.0).abs() < DELTA);   // max(5, -1) then min(5, 2) = 2
+    assert!((result[2] - 1.0).abs() < DELTA);   // max(1, 0.5) then min(1, 3) = 1
+
+    // Test lower bound only
+    let model_info = InstructionModelInfo {
+        features: Some(vec!["f1".to_string(), "f2".to_string(), "f3".to_string()]),
+        feature_size: None,
+        computation_buffer_sizes: vec![3],
+        instructions: vec![InstructionInfo::ElemWiseClip(ElemWiseClipInstructionInfo {
+            input: 0,
+            parameters_min: Some(0),
+            parameters_max: None,
+        })],
+        weights: vec![],
+        bias: vec![],
+        parameters: Some(vec![vec![0.0, -1.0, 0.5]]),
+        maps: None,
+        validation_data: None,
+    };
+
+    let model = InstructionModel::new(model_info).expect("Model creation should succeed");
+    let result = model.predict(&[-2.0, 5.0, 1.0]).expect("Prediction should succeed");
+    assert!((result[0] - 0.0).abs() < DELTA);   // max(-2, 0) = 0
+    assert!((result[1] - 5.0).abs() < DELTA);   // max(5, -1) = 5
+    assert!((result[2] - 1.0).abs() < DELTA);   // max(1, 0.5) = 1
+
+    // Test upper bound only
+    let model_info = InstructionModelInfo {
+        features: Some(vec!["f1".to_string(), "f2".to_string(), "f3".to_string()]),
+        feature_size: None,
+        computation_buffer_sizes: vec![3],
+        instructions: vec![InstructionInfo::ElemWiseClip(ElemWiseClipInstructionInfo {
+            input: 0,
+            parameters_min: None,
+            parameters_max: Some(0),
+        })],
+        weights: vec![],
+        bias: vec![],
+        parameters: Some(vec![vec![1.0, 2.0, 3.0]]),
+        maps: None,
+        validation_data: None,
+    };
+
+    let model = InstructionModel::new(model_info).expect("Model creation should succeed");
+    let result = model.predict(&[-2.0, 5.0, 1.0]).expect("Prediction should succeed");
+    assert!((result[0] - (-2.0)).abs() < DELTA); // min(-2, 1) = -2
+    assert!((result[1] - 2.0).abs() < DELTA);    // min(5, 2) = 2
+    assert!((result[2] - 1.0).abs() < DELTA);    // min(1, 3) = 1
 }
 
 #[test]

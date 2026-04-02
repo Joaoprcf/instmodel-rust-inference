@@ -14,6 +14,7 @@ pub mod copy_masked_instruction;
 pub mod dot_instruction;
 pub mod elem_wise_add_instruction;
 pub mod elem_wise_buffers_add_instruction;
+pub mod elem_wise_clip_instruction;
 pub mod elem_wise_buffers_mul_instruction;
 pub mod elem_wise_mul_instruction;
 pub mod map_transform_instruction;
@@ -28,6 +29,7 @@ pub use copy_masked_instruction::CopyMaskedInstruction;
 pub use dot_instruction::DotInstruction;
 pub use elem_wise_add_instruction::ElemWiseAddInstruction;
 pub use elem_wise_buffers_add_instruction::ElemWiseBuffersAddInstruction;
+pub use elem_wise_clip_instruction::ElemWiseClipInstruction;
 pub use elem_wise_buffers_mul_instruction::ElemWiseBuffersMulInstruction;
 pub use elem_wise_mul_instruction::ElemWiseMulInstruction;
 pub use map_transform_instruction::MapTransformInstruction;
@@ -294,6 +296,21 @@ pub fn create_instruction(
             let instruction = AddBufferHeadsInstruction::new(
                 data_ptr, heads_ptr, output_ptr, data_size, heads_size,
             )?;
+            Ok(Box::new(instruction))
+        }
+        InstructionInfo::ElemWiseClip(info) => {
+            let min_params = info
+                .parameters_min
+                .map(|idx| parameters[idx].as_slice());
+            let max_params = info
+                .parameters_max
+                .map(|idx| parameters[idx].as_slice());
+            let instruction = ElemWiseClipInstruction::new(
+                computation_buffer_indexes[info.input],
+                computation_buffer_sizes[info.input],
+                min_params,
+                max_params,
+            );
             Ok(Box::new(instruction))
         }
     }
