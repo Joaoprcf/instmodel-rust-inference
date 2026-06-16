@@ -575,6 +575,9 @@ fn test_all_activations() {
         Activation::Log,
         Activation::Log10,
         Activation::Inverse,
+        Activation::Gelu,
+        Activation::Softplus,
+        Activation::Sign,
     ];
 
     for activation in activations {
@@ -607,6 +610,80 @@ fn test_all_activations() {
             &format!("activation_{:?}", activation),
         );
     }
+}
+
+#[test]
+fn test_signed_input_activations_parity() {
+    // Activations defined for negative inputs: verify CPU==GPU over mixed signs.
+    // This also guards the Softplus GPU handler that was previously missing.
+    let activations = [
+        Activation::Relu,
+        Activation::Sigmoid,
+        Activation::Tanh,
+        Activation::Inverse,
+        Activation::Gelu,
+        Activation::Softplus,
+        Activation::Sign,
+    ];
+
+    for activation in activations {
+        let info = InstructionModelInfo {
+            features: None,
+            feature_size: Some(5),
+            computation_buffer_sizes: vec![5],
+            instructions: vec![InstructionInfo::Activation(ActivationInstructionInfo {
+                input: 0,
+                activation,
+            })],
+            weights: vec![],
+            bias: vec![],
+            parameters: None,
+            maps: None,
+            validation_data: None,
+        };
+
+        let cpu_model = InstructionModel::new(info.clone()).expect("CPU model creation failed");
+        let input = vec![-3.0, -0.5, 0.0, 0.5, 3.0];
+        let cpu_result = cpu_model.predict(&input).expect("CPU prediction failed");
+
+        let gpu_model = GpuModel::from_info(&info).expect("GPU model creation failed");
+        let gpu_result = run_gpu_inference(&gpu_model, &input).block_on();
+
+        compare_results(
+            &cpu_result,
+            &gpu_result,
+            &format!("signed_activation_{:?}", activation),
+        );
+    }
+}
+
+#[test]
+fn test_exp_activation_parity() {
+    // Exp is sign-agnostic (clamp then exp); keep inputs small so the f32 output
+    // magnitude stays well within the absolute comparison tolerance.
+    let info = InstructionModelInfo {
+        features: None,
+        feature_size: Some(5),
+        computation_buffer_sizes: vec![5],
+        instructions: vec![InstructionInfo::Activation(ActivationInstructionInfo {
+            input: 0,
+            activation: Activation::Exp,
+        })],
+        weights: vec![],
+        bias: vec![],
+        parameters: None,
+        maps: None,
+        validation_data: None,
+    };
+
+    let cpu_model = InstructionModel::new(info.clone()).expect("CPU model creation failed");
+    let input = vec![-2.0, -0.5, 0.0, 0.5, 1.0];
+    let cpu_result = cpu_model.predict(&input).expect("CPU prediction failed");
+
+    let gpu_model = GpuModel::from_info(&info).expect("GPU model creation failed");
+    let gpu_result = run_gpu_inference(&gpu_model, &input).block_on();
+
+    compare_results(&cpu_result, &gpu_result, "exp_activation");
 }
 
 #[test]

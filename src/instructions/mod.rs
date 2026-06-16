@@ -9,6 +9,7 @@ use crate::errors::InstructionModelError;
 pub mod activation_instruction;
 pub mod add_buffer_heads_instruction;
 pub mod attention_instruction;
+pub mod clip_elementwise_instruction;
 pub mod copy_instruction;
 pub mod copy_masked_instruction;
 pub mod dot_instruction;
@@ -23,6 +24,7 @@ pub mod reduce_sum_instruction;
 pub use activation_instruction::ActivationInstruction;
 pub use add_buffer_heads_instruction::AddBufferHeadsInstruction;
 pub use attention_instruction::AttentionInstruction;
+pub use clip_elementwise_instruction::ClipElementwiseInstruction;
 pub use copy_instruction::CopyInstruction;
 pub use copy_masked_instruction::CopyMaskedInstruction;
 pub use dot_instruction::DotInstruction;
@@ -156,6 +158,17 @@ pub fn create_instruction(
                 computation_buffer_indexes[info.input],
                 computation_buffer_sizes[info.input],
                 &parameters[info.parameters],
+            );
+            Ok(Box::new(instruction))
+        }
+        InstructionInfo::ClipElementwise(info) => {
+            let parameters_min = info.parameters_min.map(|idx| parameters[idx].clone());
+            let parameters_max = info.parameters_max.map(|idx| parameters[idx].clone());
+            let instruction = ClipElementwiseInstruction::new(
+                computation_buffer_indexes[info.input],
+                computation_buffer_sizes[info.input],
+                parameters_min,
+                parameters_max,
             );
             Ok(Box::new(instruction))
         }

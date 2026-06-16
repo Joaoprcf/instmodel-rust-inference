@@ -377,6 +377,14 @@ impl InstructionModel {
                 crate::instruction_model_info::InstructionInfo::ElemWiseMul(info) => {
                     used_parameters[info.parameters] = true;
                 }
+                crate::instruction_model_info::InstructionInfo::ClipElementwise(info) => {
+                    if let Some(idx) = info.parameters_min {
+                        used_parameters[idx] = true;
+                    }
+                    if let Some(idx) = info.parameters_max {
+                        used_parameters[idx] = true;
+                    }
+                }
                 crate::instruction_model_info::InstructionInfo::MapTransform(info) => {
                     used_maps[info.map] = true;
                 }

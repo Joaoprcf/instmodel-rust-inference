@@ -42,6 +42,12 @@ pub enum Activation {
     /// Softplus activation function: f(x) = log(1 + exp(x)).
     /// Uses TensorFlow-compatible thresholding for numerical stability.
     Softplus,
+    /// Exponential activation: f(x) = exp(clamp(x, -88, 88)).
+    /// The clamp keeps the result inside the f32 range (matches np.exp(np.clip(x, -88, 88))).
+    Exp,
+    /// Sign activation: f(x) = -1 for x < 0, +1 for x > 0, and x itself for 0/NaN.
+    /// Matches numpy's np.sign (preserves signed zero and propagates NaN).
+    Sign,
 }
 
 #[inline(always)]
@@ -124,6 +130,26 @@ fn softplus_activation(x: f32) -> f32 {
     }
 }
 
+/// Exponential activation with a clamp matching the reference
+/// `np.exp(np.clip(x, -88, 88))`; the clamp keeps the result inside the f32 range.
+#[inline(always)]
+fn exp_activation(x: f32) -> f32 {
+    x.clamp(-88.0, 88.0).exp()
+}
+
+/// Sign activation matching numpy's `np.sign`: -1 for x < 0, +1 for x > 0, and the
+/// value itself for 0.0/-0.0/NaN (so signed zero is preserved and NaN propagates).
+#[inline(always)]
+fn sign_activation(x: f32) -> f32 {
+    if x > 0.0 {
+        1.0
+    } else if x < 0.0 {
+        -1.0
+    } else {
+        x
+    }
+}
+
 impl Activation {
     /// Get activation by string name.
     pub fn get_by_name(type_name: &str) -> Option<Self> {
@@ -138,6 +164,8 @@ impl Activation {
             ("INVERSE", Activation::Inverse),
             ("GELU", Activation::Gelu),
             ("SOFTPLUS", Activation::Softplus),
+            ("EXP", Activation::Exp),
+            ("SIGN", Activation::Sign),
         ]
         .iter()
         .cloned()
@@ -158,6 +186,8 @@ impl Activation {
             Activation::Inverse => inverse_activation(x),
             Activation::Gelu => gelu_activation(x),
             Activation::Softplus => softplus_activation(x),
+            Activation::Exp => exp_activation(x),
+            Activation::Sign => sign_activation(x),
             Activation::Softmax => {
                 // Softmax for a single value doesn't make much sense, but we'll return exp(x)
                 // The proper softmax should be applied to a vector
@@ -228,6 +258,16 @@ impl Activation {
             Activation::Softplus => {
                 for val in values.iter_mut() {
                     *val = softplus_activation(*val);
+                }
+            }
+            Activation::Exp => {
+                for val in values.iter_mut() {
+                    *val = exp_activation(*val);
+                }
+            }
+            Activation::Sign => {
+                for val in values.iter_mut() {
+                    *val = sign_activation(*val);
                 }
             }
         }
@@ -341,6 +381,8 @@ mod tests {
             Activation::get_by_name("SOFTPLUS"),
             Some(Activation::Softplus)
         );
+        assert_eq!(Activation::get_by_name("EXP"), Some(Activation::Exp));
+        assert_eq!(Activation::get_by_name("SIGN"), Some(Activation::Sign));
         assert_eq!(Activation::get_by_name("INVALID"), None);
     }
 
@@ -372,5 +414,47 @@ mod tests {
         assert!((values[2] - 0.6931472).abs() < SOFTPLUS_DELTA);
         assert!((values[3] - 1.3132616).abs() < SOFTPLUS_DELTA);
         assert!((values[4] - 100.0).abs() < SOFTPLUS_DELTA);
+    }
+
+    #[test]
+    fn test_exp() {
+        assert!((Activation::Exp.apply_single(0.0) - 1.0).abs() < DELTA);
+        assert!((Activation::Exp.apply_single(1.0) - std::f32::consts::E).abs() < DELTA);
+        assert!((Activation::Exp.apply_single(-1.0) - (-1.0_f32).exp()).abs() < DELTA);
+        // Clamp keeps large inputs finite (exp(88) is the largest finite-ish value).
+        assert!(Activation::Exp.apply_single(1000.0).is_finite());
+        assert!((Activation::Exp.apply_single(1000.0) - 88.0_f32.exp()).abs() < 1.0);
+        // Large negative clamps to exp(-88), a tiny positive number (never NaN/inf).
+        assert!(Activation::Exp.apply_single(-1000.0) >= 0.0);
+        assert!(Activation::Exp.apply_single(-1000.0) < DELTA);
+    }
+
+    #[test]
+    fn test_exp_in_place() {
+        let mut values = [0.0, 1.0, -1.0];
+        Activation::Exp.apply_in_place(&mut values);
+        assert!((values[0] - 1.0).abs() < DELTA);
+        assert!((values[1] - std::f32::consts::E).abs() < DELTA);
+        assert!((values[2] - (-1.0_f32).exp()).abs() < DELTA);
+    }
+
+    #[test]
+    fn test_sign() {
+        assert!((Activation::Sign.apply_single(3.5) - 1.0).abs() < DELTA);
+        assert!((Activation::Sign.apply_single(-2.0) - (-1.0)).abs() < DELTA);
+        assert!((Activation::Sign.apply_single(0.0) - 0.0).abs() < DELTA);
+        // NaN propagates, matching np.sign(nan) == nan.
+        assert!(Activation::Sign.apply_single(f32::NAN).is_nan());
+    }
+
+    #[test]
+    fn test_sign_in_place() {
+        let mut values = [-5.0, -0.0, 0.0, 0.001, 100.0];
+        Activation::Sign.apply_in_place(&mut values);
+        assert!((values[0] - (-1.0)).abs() < DELTA);
+        assert!((values[1] - 0.0).abs() < DELTA);
+        assert!((values[2] - 0.0).abs() < DELTA);
+        assert!((values[3] - 1.0).abs() < DELTA);
+        assert!((values[4] - 1.0).abs() < DELTA);
     }
 }

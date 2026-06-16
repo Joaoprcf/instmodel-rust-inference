@@ -36,14 +36,9 @@ fn run_benchmarks() -> BenchmarkResult<()> {
                 }
             }
         }
-        3 => {
-            if args[1] == "--benchmark" {
-                let benchmark_name = &args[2];
-                BenchmarkRunner::run_benchmark(benchmark_name)
-            } else {
-                print_usage();
-                Ok(())
-            }
+        3 if args[1] == "--benchmark" => {
+            let benchmark_name = &args[2];
+            BenchmarkRunner::run_benchmark(benchmark_name)
         }
         _ => {
             print_usage();

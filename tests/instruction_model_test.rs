@@ -2,10 +2,10 @@
 
 use instmodel_inference::instruction_model_info::{
     ActivationInstructionInfo, AddBufferHeadsInstructionInfo, AttentionInstructionInfo,
-    CopyInstructionInfo, CopyMaskedInstructionInfo, DotInstructionInfo, ElemWiseAddInstructionInfo,
-    ElemWiseBuffersAddInstructionInfo, ElemWiseBuffersMulInstructionInfo,
-    ElemWiseMulInstructionInfo, InstructionInfo, MultiplyBufferHeadsInstructionInfo,
-    ReduceSumInstructionInfo,
+    ClipElementwiseInstructionInfo, CopyInstructionInfo, CopyMaskedInstructionInfo,
+    DotInstructionInfo, ElemWiseAddInstructionInfo, ElemWiseBuffersAddInstructionInfo,
+    ElemWiseBuffersMulInstructionInfo, ElemWiseMulInstructionInfo, InstructionInfo,
+    MultiplyBufferHeadsInstructionInfo, ReduceSumInstructionInfo,
 };
 use instmodel_inference::{Activation, InstructionModel, InstructionModelInfo, ValidationData};
 
@@ -363,6 +363,122 @@ fn element_wise() {
     assert!((result[0] - 0.0).abs() < DELTA);
     assert!((result[1] - 1.0).abs() < DELTA);
     assert!((result[2] - 3.5).abs() < DELTA);
+}
+
+/// Helper: run a single CLIP_ELEMENTWISE over a size-4 buffer with the given
+/// optional parameter-buffer indices.
+fn run_clip(
+    inputs: &[f32],
+    parameters: Vec<Vec<f32>>,
+    parameters_min: Option<usize>,
+    parameters_max: Option<usize>,
+) -> Vec<f32> {
+    let model_info = InstructionModelInfo {
+        features: Some(
+            inputs
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("f{i}"))
+                .collect(),
+        ),
+        feature_size: None,
+        computation_buffer_sizes: vec![inputs.len()],
+        instructions: vec![InstructionInfo::ClipElementwise(
+            ClipElementwiseInstructionInfo {
+                input: 0,
+                parameters_min,
+                parameters_max,
+            },
+        )],
+        weights: vec![],
+        bias: vec![],
+        parameters: Some(parameters),
+        maps: None,
+        validation_data: None,
+    };
+    let model = InstructionModel::new(model_info).expect("Model creation should succeed");
+    model.predict(inputs).expect("Prediction should succeed")
+}
+
+#[test]
+fn clip_elementwise_both_bounds() {
+    // clamp(x, 0, 1) — the canonical hard-gate clamp.
+    let mins = vec![0.0, 0.0, 0.0, 0.0];
+    let maxs = vec![1.0, 1.0, 1.0, 1.0];
+    let result = run_clip(&[-5.0, 0.3, 0.7, 5.0], vec![mins, maxs], Some(0), Some(1));
+    assert!((result[0] - 0.0).abs() < DELTA);
+    assert!((result[1] - 0.3).abs() < DELTA);
+    assert!((result[2] - 0.7).abs() < DELTA);
+    assert!((result[3] - 1.0).abs() < DELTA);
+}
+
+#[test]
+fn clip_elementwise_min_only() {
+    // Only a lower bound: max(x, min[i]).
+    let mins = vec![-1.0, 0.0, 0.5, 10.0];
+    let result = run_clip(&[-5.0, -0.2, 0.7, 5.0], vec![mins], Some(0), None);
+    assert!((result[0] - (-1.0)).abs() < DELTA);
+    assert!((result[1] - 0.0).abs() < DELTA);
+    assert!((result[2] - 0.7).abs() < DELTA);
+    assert!((result[3] - 10.0).abs() < DELTA);
+}
+
+#[test]
+fn clip_elementwise_max_only() {
+    // Only an upper bound: min(x, max[i]).
+    let maxs = vec![1.0, 0.5, 0.0, -10.0];
+    let result = run_clip(&[-5.0, 0.7, 0.7, 5.0], vec![maxs], None, Some(0));
+    assert!((result[0] - (-5.0)).abs() < DELTA);
+    assert!((result[1] - 0.5).abs() < DELTA);
+    assert!((result[2] - 0.0).abs() < DELTA);
+    assert!((result[3] - (-10.0)).abs() < DELTA);
+}
+
+#[test]
+fn sign_and_exp_activations() {
+    // SIGN then... separate models to keep it simple.
+    let sign_model = InstructionModelInfo {
+        features: Some(vec!["a".to_string(), "b".to_string(), "c".to_string()]),
+        feature_size: None,
+        computation_buffer_sizes: vec![3],
+        instructions: vec![InstructionInfo::Activation(ActivationInstructionInfo {
+            input: 0,
+            activation: Activation::Sign,
+        })],
+        weights: vec![],
+        bias: vec![],
+        parameters: None,
+        maps: None,
+        validation_data: None,
+    };
+    let model = InstructionModel::new(sign_model).expect("Model creation should succeed");
+    let result = model
+        .predict(&[-3.0, 0.0, 2.0])
+        .expect("Prediction should succeed");
+    assert!((result[0] - (-1.0)).abs() < DELTA);
+    assert!((result[1] - 0.0).abs() < DELTA);
+    assert!((result[2] - 1.0).abs() < DELTA);
+
+    let exp_model = InstructionModelInfo {
+        features: Some(vec!["a".to_string(), "b".to_string()]),
+        feature_size: None,
+        computation_buffer_sizes: vec![2],
+        instructions: vec![InstructionInfo::Activation(ActivationInstructionInfo {
+            input: 0,
+            activation: Activation::Exp,
+        })],
+        weights: vec![],
+        bias: vec![],
+        parameters: None,
+        maps: None,
+        validation_data: None,
+    };
+    let model = InstructionModel::new(exp_model).expect("Model creation should succeed");
+    let result = model
+        .predict(&[0.0, 1.0])
+        .expect("Prediction should succeed");
+    assert!((result[0] - 1.0).abs() < DELTA);
+    assert!((result[1] - std::f32::consts::E).abs() < DELTA);
 }
 
 #[test]

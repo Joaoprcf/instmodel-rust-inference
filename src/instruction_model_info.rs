@@ -35,6 +35,8 @@ pub enum InstructionInfo {
     ElemWiseAdd(ElemWiseAddInstructionInfo),
     #[serde(rename = "MUL_ELEMENTWISE")]
     ElemWiseMul(ElemWiseMulInstructionInfo),
+    #[serde(rename = "CLIP_ELEMENTWISE")]
+    ClipElementwise(ClipElementwiseInstructionInfo),
     #[serde(rename = "MAP_TRANSFORM")]
     MapTransform(MapTransformInstructionInfo),
     #[serde(rename = "ADD_ELEMENTWISE_BUFFERS")]
@@ -61,6 +63,7 @@ impl InstructionInfo {
             InstructionInfo::Activation(info) => vec![info.input],
             InstructionInfo::ElemWiseAdd(info) => vec![info.input],
             InstructionInfo::ElemWiseMul(info) => vec![info.input],
+            InstructionInfo::ClipElementwise(info) => vec![info.input],
             InstructionInfo::MapTransform(info) => vec![info.input],
             InstructionInfo::ElemWiseBuffersAdd(info) => info.input.clone(),
             InstructionInfo::ElemWiseBuffersMul(info) => info.input.clone(),
@@ -81,6 +84,7 @@ impl InstructionInfo {
             InstructionInfo::Activation(info) => info.input, // In-place operation
             InstructionInfo::ElemWiseAdd(info) => info.input, // In-place operation
             InstructionInfo::ElemWiseMul(info) => info.input, // In-place operation
+            InstructionInfo::ClipElementwise(info) => info.input, // In-place operation
             InstructionInfo::MapTransform(info) => info.output,
             InstructionInfo::ElemWiseBuffersAdd(info) => info.output,
             InstructionInfo::ElemWiseBuffersMul(info) => info.output,
@@ -164,6 +168,24 @@ pub struct ElemWiseMulInstructionInfo {
     pub input: usize,
     /// Number of parameters for the element-wise operation.
     pub parameters: usize,
+}
+
+/// Represents an element-wise clip (clamp) operation instruction.
+///
+/// Operates in place on `input`, applying an element-wise lower bound
+/// (`max(x, parameters[parameters_min])`) and/or upper bound
+/// (`min(x, parameters[parameters_max])`). Both bounds are optional; a missing
+/// bound leaves that side unconstrained. Mirrors the reference `CLIP_ELEMENTWISE`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClipElementwiseInstructionInfo {
+    /// Input index of the target buffer (operates in place).
+    pub input: usize,
+    /// Optional parameters index providing the element-wise lower bound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters_min: Option<usize>,
+    /// Optional parameters index providing the element-wise upper bound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters_max: Option<usize>,
 }
 
 /// Represents a map transform operation instruction.

@@ -1,6 +1,6 @@
-// activations.wgsl - All 9 activation functions for GPU neural network inference
+// activations.wgsl - All activation functions for GPU neural network inference
 
-// Activation type constants
+// Activation type constants (must match src/gpu/gpu_instruction.rs activation_types)
 const ACTIVATION_NONE: u32 = 0u;
 const ACTIVATION_RELU: u32 = 1u;
 const ACTIVATION_SIGMOID: u32 = 2u;
@@ -11,6 +11,9 @@ const ACTIVATION_LOG: u32 = 6u;
 const ACTIVATION_LOG10: u32 = 7u;
 const ACTIVATION_INVERSE: u32 = 8u;
 const ACTIVATION_GELU: u32 = 9u;
+const ACTIVATION_SOFTPLUS: u32 = 10u;
+const ACTIVATION_EXP: u32 = 11u;
+const ACTIVATION_SIGN: u32 = 12u;
 
 // Log base 10 constant: 1 / ln(10)
 const LOG10_E: f32 = 0.4342944819032518;
@@ -80,6 +83,28 @@ fn activation_gelu(x: f32) -> f32 {
     return x * 0.5 * (1.0 + erf_approx(x * SQRT_2_INV));
 }
 
+// Softplus activation with TensorFlow-compatible thresholding (matches the CPU path).
+// threshold = ln(f32::EPSILON) + 2 ≈ -13.9424
+fn activation_softplus(x: f32) -> f32 {
+    let threshold: f32 = -13.9424;
+    if x > -threshold {
+        return x;
+    } else if x < threshold {
+        return exp(x);
+    }
+    return log(1.0 + exp(x));
+}
+
+// Exponential activation: f(x) = exp(clamp(x, -88, 88)) (clamp keeps f32 finite).
+fn activation_exp(x: f32) -> f32 {
+    return exp(clamp(x, -88.0, 88.0));
+}
+
+// Sign activation: -1 for x < 0, 0 for x == 0, +1 for x > 0.
+fn activation_sign(x: f32) -> f32 {
+    return sign(x);
+}
+
 // Apply single-value activation (non-softmax)
 fn apply_activation_single(x: f32, activation_type: u32) -> f32 {
     switch activation_type {
@@ -106,6 +131,15 @@ fn apply_activation_single(x: f32, activation_type: u32) -> f32 {
         }
         case ACTIVATION_GELU: {
             return activation_gelu(x);
+        }
+        case ACTIVATION_SOFTPLUS: {
+            return activation_softplus(x);
+        }
+        case ACTIVATION_EXP: {
+            return activation_exp(x);
+        }
+        case ACTIVATION_SIGN: {
+            return activation_sign(x);
         }
         default: {
             return x;

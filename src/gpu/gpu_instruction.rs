@@ -24,6 +24,8 @@ pub mod activation_types {
     pub const INVERSE: u32 = 0x08;
     pub const GELU: u32 = 0x09;
     pub const SOFTPLUS: u32 = 0x0A;
+    pub const EXP: u32 = 0x0B;
+    pub const SIGN: u32 = 0x0C;
 }
 
 /// Convert Activation enum to GPU activation type.
@@ -40,6 +42,8 @@ pub fn activation_to_gpu(activation: Option<Activation>) -> u32 {
         Some(Activation::Inverse) => activation_types::INVERSE,
         Some(Activation::Gelu) => activation_types::GELU,
         Some(Activation::Softplus) => activation_types::SOFTPLUS,
+        Some(Activation::Exp) => activation_types::EXP,
+        Some(Activation::Sign) => activation_types::SIGN,
     }
 }
 
