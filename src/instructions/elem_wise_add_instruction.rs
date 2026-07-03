@@ -4,6 +4,7 @@ use crate::errors::InstructionModelError;
 use crate::instructions::Instruction;
 
 /// Represents an instruction that performs element-wise addition with parameters.
+#[derive(Clone)]
 pub struct ElemWiseAddInstruction {
     output_ptr: usize,
     data_size: usize,
@@ -40,5 +41,9 @@ impl Instruction for ElemWiseAddInstruction {
         }
 
         Ok(())
+    }
+
+    fn clone_box(&self) -> Option<Box<dyn Instruction>> {
+        Some(Box::new(self.clone()))
     }
 }

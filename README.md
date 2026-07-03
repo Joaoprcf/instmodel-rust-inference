@@ -1,6 +1,6 @@
 # instmodel-rust-inference
 
-A high-performance neural network inference library for Rust that executes optimized computation sequences through a unified buffer architecture.
+A high-performance neural network inference library for Rust that executes optimized computation sequences through a unified buffer architecture — now with graph-based model authoring, in-place mutable weights, a deterministic evolution-strategies optimizer, and a GPU population evaluator built for evolutionary RL workloads.
 
 ## Installation
 
@@ -12,22 +12,156 @@ Or add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-instmodel_inference = "<version>"
+instmodel_inference = "1.0"
 ```
+
+MSRV: Rust 1.89 (AVX-512 intrinsics used by the SIMD dot-product path).
 
 ## Overview
 
-This library provides a lightweight, zero-dependency neural network inference engine. Models are defined as a sequence of instructions that operate on computation buffers, enabling efficient memory reuse and predictable performance.
+Models are defined as a sequence of instructions that operate on computation buffers, enabling efficient memory reuse and predictable performance.
 
 **Key Features:**
 
-- Instruction-based execution model for neural network inference
-- Support for common neural network operations (dot product, activations, attention, etc.)
-- JSON serialization/deserialization for model configuration
-- Built-in model validation
-- Memory-efficient unified buffer architecture
+- Weightless graph DSL: author an architecture once, compile it with any flat parameter vector θ
+- Canonical flat-θ ↔ model mapping (`ParamLayout`) — a documented public contract
+- In-place mutable models: `apply_theta` overwrites weights without rebuilding (~13× faster than recreation)
+- Deterministic OpenAI-style evolution strategies (`EsOptimizer`) with counter-based noise
+- Zero-repack GPU population packing and a feature-gated wgpu evaluation host
+- Instruction-based execution model with GPU-embeddable WGSL inference
+- JSON serialization/deserialization, built-in validation, parallel batch prediction
 
-## Benchmarks
+## Quick Start: Graph Authoring (recommended)
+
+Declare the architecture as a small DAG — structure only, no weight data — then compile it with any flat θ:
+
+```rust
+use instmodel_inference::activation::Activation;
+use instmodel_inference::graph::Graph;
+
+let graph = Graph::new();
+let x = graph.input(8, None);
+let normalized = graph.normalize(&x, vec![0.0; 8], vec![1.0; 8]);
+let hidden = graph.dense(&normalized, 16, Some(Activation::Tanh));
+let y = graph.dense(&hidden, 1, None);
+let model_graph = graph.model(vec![&x], &y);
+
+// The canonical flat-θ layout is derived from structure alone.
+let layout = model_graph.weights_map()?;
+let theta = vec![0.01f32; layout.total];
+
+// Compile and run.
+let model = model_graph.to_model(&theta)?;
+let output = model.predict(&[0.0; 8])?;
+```
+
+All 14 instruction types are authorable: `dense` / `dense_shared`, `concat`, `gather`, `activation`, `clip`, `add_const` / `mul_const`, `normalize`, `add` / `mul` (n-ary buffers), `add_heads` / `mul_heads`, `reduce_sum`, `attention` / `attention_shared`, and `map_transform`. Reusing a `WeightId` (via the `_shared` variants) shares one weight tensor — a single θ slot referenced by several instructions.
+
+### The canonical θ order (public contract)
+
+θ is laid out per weight slot in first-seen emission order: the row-major `[out × in]` weight run, then the `[out]` bias run. `ParamLayout::from_info(&model_graph.compile(&theta)?)` always equals `model_graph.weights_map()?`, and the GPU blob's weights region is byte-identical to θ. Constants (`normalize`, `clip` bounds, …) and maps are *parameters*, not θ — they are never trained or overwritten by θ writes.
+
+## Mutable Models: No Rebuild, No Latency Loss
+
+A compiled model can have its full weight set swapped in place:
+
+```rust
+let mut model = model_graph.to_model(&theta)?;
+
+model.apply_theta(&new_theta)?;      // in-place overwrite, allocation-free
+model.read_theta(&mut theta_out)?;   // read weights back in canonical order
+let worker = model.try_clone()?;     // independent copy for another thread
+```
+
+`cargo run --release --bin es_benchmark` measures the difference on a 250 → 300 → 200 network (135,500 parameters, laptop-class hardware):
+
+| Operation | Time |
+| --- | ---: |
+| Full rebuild (compile + validate + schedule) | ~105 µs |
+| `apply_theta` (in-place overwrite) | ~8 µs |
+| `try_clone` | ~9 µs |
+
+## Evolution Strategies Training
+
+The `evolution` module is a deterministic OpenAI-ES toolkit: mirrored sampling, centered-rank fitness shaping, SGD with momentum, and counter-based Gaussian noise that is a pure function of `(seed, step, index)` — results never depend on thread scheduling.
+
+```rust
+use instmodel_inference::evolution::{cosine_anneal, EsConfig, EsOptimizer};
+
+let layout = model_graph.weights_map()?;
+let mut optimizer = EsOptimizer::new(vec![0.0; layout.total], EsConfig::default())?;
+let mut model = model_graph.to_model(&vec![0.0; layout.total])?;
+
+let mut theta_f32 = Vec::new();
+let mut fitness = vec![0.0f64; optimizer.population_size()];
+
+for step in 0..total_steps {
+    // Rank-shaped gradients keep O(1) magnitude even at the optimum,
+    // so anneal BOTH sigma and the learning rate for θ to settle.
+    optimizer.set_sigma(base_sigma * cosine_anneal(step, total_steps, 0.2))?;
+    optimizer.set_learning_rate(base_lr * cosine_anneal(step, total_steps, 0.05))?;
+
+    optimizer.ask()?;
+    for candidate in 0..optimizer.population_size() {
+        optimizer.candidate_f32_into(candidate, &mut theta_f32)?;
+        model.apply_theta(&theta_f32)?;   // mutate, don't rebuild
+        fitness[candidate] = evaluate(&model);
+    }
+    optimizer.tell(&fitness)?;
+}
+```
+
+See `examples/es_train.rs` for the complete runnable version (training, logging, and a serde round-trip of the final model):
+
+```bash
+cargo run --release --example es_train
+```
+
+Optimizer overhead per `ask` + `tell` step (pairs = 16, constant-time fitness): ~0.2 ms at 1k parameters, ~1.8 ms at 10k, ~20 ms at 100k.
+
+## GPU Population Evaluation (`gpu-runtime`)
+
+`PopulationPack` (always available, no wgpu dependency) tiles a model into one contiguous blob, one copy per candidate. Because the blob's weights region is byte-identical to canonical θ, writing a candidate is a pure memcpy — ~40 GB/s in the benchmark, never a repack.
+
+With the `gpu-runtime` feature, `PopulationEvaluator` runs the whole population against a shared input batch in a single compute dispatch:
+
+```rust
+use instmodel_inference::gpu::{GpuContext, GpuContextOptions, PopulationEvaluator};
+
+let context = GpuContext::new(&GpuContextOptions::default())?;
+let mut evaluator = PopulationEvaluator::from_graph(
+    &context, &model_graph, optimizer.population_size(), batch_size)?;
+
+let mut outputs = vec![0.0f32; evaluator.n_candidates() * batch_size * evaluator.output_size()];
+
+optimizer.ask()?;
+evaluator.write_population_f64(optimizer.population())?;
+evaluator.evaluate(&inputs, &mut outputs)?;   // one dispatch, sync readback
+// outputs are candidate-major: [n_candidates × batch × output_size]
+```
+
+Buffers and the compiled pipeline persist across `evaluate` calls; per step you pay one upload, one dispatch, and one readback. By default software/CPU adapters (llvmpipe, SwiftShader) are rejected so a training loop fails loudly instead of silently crawling — opt in with `allow_software_adapter`.
+
+```bash
+cargo run --release --example es_train_gpu --features gpu-runtime
+```
+
+## Feature Flags
+
+| Feature | Default | Description |
+| --- | --- | --- |
+| `gpu-runtime` | off | wgpu evaluation host: `GpuContext`, `PopulationEvaluator` (adds `wgpu` + `pollster`) |
+| `gpu-benchmark` | off | GPU benchmark binary; implies `gpu-runtime` |
+
+Everything else — graph DSL, `ParamLayout`, `apply_theta`, `EsOptimizer`, `PopulationPack`, GPU blob serialization, and WGSL generation — is available with no features and no GPU dependencies.
+
+## Determinism
+
+- **CPU**: bit-exact. `apply_theta` followed by `predict` matches a freshly rebuilt model bitwise; the serde JSON round-trip preserves predictions exactly.
+- **ES noise**: perturbation `i` of step `s` is a pure function of `(seed, s, i)` (splitmix64 + Box–Muller). Two optimizers with the same seed produce identical trajectories on any machine or thread count.
+- **GPU**: deterministic per device; CPU/GPU parity is exact for copy-like operations and within ~1e-4 for dot-product paths (f32 accumulation order differs).
+
+## Inference Benchmarks
 
 These benchmarks measure a simple 2-layer dense network:
 
@@ -59,14 +193,19 @@ Model weights are shared across all threads/batches (not replicated). Rust paral
 ### How to run
 
 ```bash
-# Rust
+# Rust inference throughput
 cargo run --release --bin parallel_benchmark
+
+# ES workflow (mutation vs rebuild, pack writes, optimizer overhead)
+cargo run --release --bin es_benchmark
 
 # TensorFlow (CPU)
 python3 benchmarks/tensorflow_benchmark.py
 ```
 
-## Quick Start
+## Low-Level Model Definition
+
+The graph DSL compiles down to `InstructionModelInfo`; you can also build that structure directly.
 
 ### Simple Neural Network
 
@@ -102,58 +241,9 @@ let model = InstructionModel::new(model_info)?;
 // Run inference
 let input = vec![1.0, 0.5];
 let output = model.predict(&input)?;
-println!("Prediction: {}", output[0]);
 
 // Or get a single output value directly
 let result = model.predict_single(&input)?;
-```
-
-### Multi-Layer Neural Network
-
-```rust
-use instmodel_inference::{
-    InstructionModel, InstructionModelInfo, Activation,
-    instruction_model_info::{InstructionInfo, DotInstructionInfo},
-};
-
-// 2 inputs -> 2 hidden (ReLU) -> 1 output (Sigmoid)
-let model_info = InstructionModelInfo {
-    features: Some(vec!["x1".to_string(), "x2".to_string()]),
-    feature_size: None,
-    computation_buffer_sizes: vec![2, 2, 1],
-    instructions: vec![
-        // Hidden layer with ReLU
-        InstructionInfo::Dot(DotInstructionInfo {
-            input: 0,
-            output: 1,
-            weights: 0,
-            activation: Some(Activation::Relu),
-        }),
-        // Output layer with Sigmoid
-        InstructionInfo::Dot(DotInstructionInfo {
-            input: 1,
-            output: 2,
-            weights: 1,
-            activation: Some(Activation::Sigmoid),
-        }),
-    ],
-    weights: vec![
-        // Hidden layer weights [2, 2]
-        vec![vec![2.0, 0.5], vec![-2.0, -0.5]],
-        // Output layer weights [1, 2]
-        vec![vec![0.5, -1.0]],
-    ],
-    bias: vec![
-        vec![0.25, -0.25],  // Hidden layer bias
-        vec![2.0],           // Output layer bias
-    ],
-    parameters: None,
-    maps: None,
-    validation_data: None,
-};
-
-let model = InstructionModel::new(model_info)?;
-let result = model.predict_single(&[1.0, -1.0])?;
 ```
 
 ### Loading from JSON
@@ -197,6 +287,8 @@ let json_config = r#"
 let model_info: InstructionModelInfo = serde_json::from_str(json_config)?;
 let model = InstructionModel::new(model_info)?;
 ```
+
+The JSON format is unchanged from 0.9 — existing model files load as-is.
 
 ### Logistic Regression
 
@@ -260,6 +352,10 @@ let model = InstructionModel::new(model_info)?;
 | `Log`      | f(x) = ln(x + 1) for x > 0, else 0       |
 | `Log10`    | f(x) = log10(x + 1) for x > 0, else 0    |
 | `Inverse`  | f(x) = 1 - x                             |
+| `Gelu`     | Gaussian Error Linear Unit               |
+| `Softplus` | f(x) = ln(1 + exp(x))                    |
+| `Exp`      | f(x) = exp(x)                            |
+| `Sign`     | f(x) = sign(x) ∈ {-1, 0, 1}              |
 
 ### Instruction Types
 
@@ -271,8 +367,11 @@ let model = InstructionModel::new(model_info)?;
 | Activation            | `ACTIVATION`                   | Apply activation function in-place                    |
 | Element-wise Add      | `ADD_ELEMENTWISE`              | Add parameters element-wise                           |
 | Element-wise Multiply | `MUL_ELEMENTWISE`              | Multiply by parameters element-wise                   |
+| Element-wise Clip     | `CLIP_ELEMENTWISE`             | Clamp between optional parameter bounds               |
 | Buffers Add           | `ADD_ELEMENTWISE_BUFFERS`      | Sum multiple buffers                                  |
 | Buffers Multiply      | `MULTIPLY_ELEMENTWISE_BUFFERS` | Multiply multiple buffers element-wise                |
+| Add Buffer Heads      | `ADD_BUFFER_HEADS`             | Add a per-head value to each segment of a buffer      |
+| Multiply Buffer Heads | `MULTIPLY_BUFFER_HEADS`        | Multiply each segment of a buffer by a per-head value |
 | Reduce Sum            | `REDUCE_SUM`                   | Sum all values in a buffer to a single value          |
 | Attention             | `ATTENTION`                    | Attention mechanism (linear + softmax + element-wise) |
 | Map Transform         | `MAP_TRANSFORM`                | Lookup and transform using a map                      |
@@ -413,6 +512,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
 For RL and simulation workloads, the model data stays on GPU and each thread can call `predict()` multiple times per episode without CPU<->GPU transfers. This eliminates transfer overhead and enables massive parallelism across episodes.
 
+**Blob version note:** 1.0.0 bumps the GPU blob to version 2 (it adds opcodes for masked copy, clip, n-ary buffer ops, head ops, and reduce-sum). Older WGSL interpreters silently skip unknown opcodes, so always pair the blob and the generated WGSL from the same crate version. `MAP_TRANSFORM` and `ATTENTION` remain CPU-only.
+
 ### Model Validation
 
 Include validation data to verify model correctness on creation:
@@ -470,6 +571,8 @@ The library uses a unified buffer architecture where all computation buffers are
                     Instructions operate on
                     buffer regions by index
 ```
+
+The model output is always the last computation buffer, on CPU and GPU alike.
 
 ## License
 

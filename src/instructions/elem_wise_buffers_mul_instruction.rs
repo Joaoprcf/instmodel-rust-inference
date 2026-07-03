@@ -4,6 +4,7 @@ use crate::errors::InstructionModelError;
 use crate::instructions::Instruction;
 
 /// Represents an element-wise multiplication operation that multiplies multiple input buffers.
+#[derive(Clone)]
 pub struct ElemWiseBuffersMulInstruction {
     input_ptrs: Vec<usize>,
     output_ptr: usize,
@@ -58,5 +59,9 @@ impl Instruction for ElemWiseBuffersMulInstruction {
         }
 
         Ok(())
+    }
+
+    fn clone_box(&self) -> Option<Box<dyn Instruction>> {
+        Some(Box::new(self.clone()))
     }
 }

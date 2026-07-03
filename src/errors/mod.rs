@@ -4,10 +4,14 @@
 //! avoiding generic error wrappers like `anyhow` or `Box<dyn Error>` for better
 //! error handling and debugging.
 
+mod evolution_error;
+mod graph_error;
 mod instruction_model_error;
 mod parallel_predict_error;
 mod validation_error;
 
+pub use evolution_error::EvolutionError;
+pub use graph_error::GraphError;
 pub use instruction_model_error::{
     BufferIndexOutOfBoundsError, ComputationBufferSizeExceedsLimitError, FeatureSizeMismatchError,
     InstructionModelError, InvalidFeatureSizeError, UnusedComputationError,

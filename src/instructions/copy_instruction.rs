@@ -4,6 +4,7 @@ use crate::errors::InstructionModelError;
 use crate::instructions::Instruction;
 
 /// Represents an instruction that copies data from one buffer location to another.
+#[derive(Clone)]
 pub struct CopyInstruction {
     input_ptr: usize,
     output_ptr: usize,
@@ -35,5 +36,9 @@ impl Instruction for CopyInstruction {
                 unified_computation_buffer[self.input_ptr + i];
         }
         Ok(())
+    }
+
+    fn clone_box(&self) -> Option<Box<dyn Instruction>> {
+        Some(Box::new(self.clone()))
     }
 }

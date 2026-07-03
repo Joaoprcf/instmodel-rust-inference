@@ -7,6 +7,7 @@ use std::collections::HashMap;
 /// Represents an instruction that maps a feature to a vector of values using a hashtable.
 /// This instruction mimics an embedding layer in a neural network.
 /// It is used to map categorical features such as IDs or types to a vector of values.
+#[derive(Clone)]
 pub struct MapTransformInstruction {
     input_ptr: usize,
     output_ptr: usize,
@@ -59,5 +60,9 @@ impl Instruction for MapTransformInstruction {
         }
 
         Ok(())
+    }
+
+    fn clone_box(&self) -> Option<Box<dyn Instruction>> {
+        Some(Box::new(self.clone()))
     }
 }

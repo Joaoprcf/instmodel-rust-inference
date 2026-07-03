@@ -9,7 +9,20 @@ pub mod opcodes {
     pub const ELEM_WISE_ADD: u32 = 0x03;
     pub const ELEM_WISE_MUL: u32 = 0x04;
     pub const COPY: u32 = 0x05;
+    pub const COPY_MASKED: u32 = 0x06;
+    pub const CLIP_ELEMENTWISE: u32 = 0x07;
+    pub const ELEM_WISE_BUFFERS_ADD: u32 = 0x08;
+    pub const ELEM_WISE_BUFFERS_MUL: u32 = 0x09;
+    pub const MULTIPLY_BUFFER_HEADS: u32 = 0x0A;
+    pub const ADD_BUFFER_HEADS: u32 = 0x0B;
+    pub const REDUCE_SUM: u32 = 0x0C;
 }
+
+/// Sentinel for an absent bound in CLIP_ELEMENTWISE `param0`/`param1`.
+///
+/// Params-region offsets start at 0, so absence needs an out-of-band marker;
+/// the WGSL interpreter checks against this value before touching the offset.
+pub const CLIP_BOUND_NONE: u32 = u32::MAX;
 
 /// Activation type constants matching WGSL definitions.
 pub mod activation_types {
@@ -142,6 +155,145 @@ impl GpuInstruction {
         }
     }
 
+    /// Create a COPY_MASKED instruction.
+    ///
+    /// `pointers_offset` locates a list of `count` bitcast-u32 absolute
+    /// compute-buffer indexes in the params region; the interpreter gathers
+    /// `output[i] = compute_buffer[pointers[i]]`.
+    pub fn copy_masked(pointers_offset: u32, count: u32, output_ptr: u32) -> Self {
+        Self {
+            opcode: opcodes::COPY_MASKED,
+            input_ptr: 0,
+            output_ptr,
+            data_size: count,
+            param0: pointers_offset,
+            param1: 0,
+            param2: 0,
+            reserved: 0,
+        }
+    }
+
+    /// Create a CLIP_ELEMENTWISE instruction (in place).
+    ///
+    /// `min_offset`/`max_offset` are params-region offsets of the per-element
+    /// bound vectors; `None` encodes as [`CLIP_BOUND_NONE`].
+    pub fn clip_elementwise(
+        ptr: u32,
+        size: u32,
+        min_offset: Option<u32>,
+        max_offset: Option<u32>,
+    ) -> Self {
+        Self {
+            opcode: opcodes::CLIP_ELEMENTWISE,
+            input_ptr: ptr,
+            output_ptr: ptr,
+            data_size: size,
+            param0: min_offset.unwrap_or(CLIP_BOUND_NONE),
+            param1: max_offset.unwrap_or(CLIP_BOUND_NONE),
+            param2: 0,
+            reserved: 0,
+        }
+    }
+
+    /// Create an ELEM_WISE_BUFFERS_ADD instruction.
+    ///
+    /// `pointers_offset` locates a list of `input_count` bitcast-u32 absolute
+    /// compute-buffer indexes in the params region — one per input buffer.
+    pub fn elem_wise_buffers_add(
+        output_ptr: u32,
+        size: u32,
+        pointers_offset: u32,
+        input_count: u32,
+    ) -> Self {
+        Self {
+            opcode: opcodes::ELEM_WISE_BUFFERS_ADD,
+            input_ptr: 0,
+            output_ptr,
+            data_size: size,
+            param0: pointers_offset,
+            param1: input_count,
+            param2: 0,
+            reserved: 0,
+        }
+    }
+
+    /// Create an ELEM_WISE_BUFFERS_MUL instruction (same encoding as the
+    /// add variant).
+    pub fn elem_wise_buffers_mul(
+        output_ptr: u32,
+        size: u32,
+        pointers_offset: u32,
+        input_count: u32,
+    ) -> Self {
+        Self {
+            opcode: opcodes::ELEM_WISE_BUFFERS_MUL,
+            input_ptr: 0,
+            output_ptr,
+            data_size: size,
+            param0: pointers_offset,
+            param1: input_count,
+            param2: 0,
+            reserved: 0,
+        }
+    }
+
+    /// Create a MULTIPLY_BUFFER_HEADS instruction.
+    ///
+    /// `out[i] = data[i] * heads[i / (data_size / num_heads)]`.
+    pub fn multiply_buffer_heads(
+        data_ptr: u32,
+        output_ptr: u32,
+        data_size: u32,
+        heads_ptr: u32,
+        num_heads: u32,
+    ) -> Self {
+        Self {
+            opcode: opcodes::MULTIPLY_BUFFER_HEADS,
+            input_ptr: data_ptr,
+            output_ptr,
+            data_size,
+            param0: heads_ptr,
+            param1: num_heads,
+            param2: 0,
+            reserved: 0,
+        }
+    }
+
+    /// Create an ADD_BUFFER_HEADS instruction (same encoding as multiply).
+    pub fn add_buffer_heads(
+        data_ptr: u32,
+        output_ptr: u32,
+        data_size: u32,
+        heads_ptr: u32,
+        num_heads: u32,
+    ) -> Self {
+        Self {
+            opcode: opcodes::ADD_BUFFER_HEADS,
+            input_ptr: data_ptr,
+            output_ptr,
+            data_size,
+            param0: heads_ptr,
+            param1: num_heads,
+            param2: 0,
+            reserved: 0,
+        }
+    }
+
+    /// Create a REDUCE_SUM instruction: sums `input_size` elements at
+    /// `input_ptr` into the single scalar at `output_ptr`.
+    pub fn reduce_sum(input_ptr: u32, output_ptr: u32, input_size: u32) -> Self {
+        Self {
+            opcode: opcodes::REDUCE_SUM,
+            input_ptr,
+            output_ptr,
+            data_size: input_size,
+            param0: 0,
+            param1: 0,
+            param2: 0,
+            reserved: 0,
+        }
+    }
+
     /// Convert to f32 array (for packing into single f32 buffer).
     /// Each u32 field is bitcast to f32.
     pub fn to_f32_array(&self) -> [f32; Self::SIZE_U32S] {
@@ -225,6 +377,70 @@ mod tests {
             activation_to_gpu(Some(Activation::Softplus)),
             activation_types::SOFTPLUS
         );
+    }
+
+    #[test]
+    fn test_copy_masked_instruction() {
+        let inst = GpuInstruction::copy_masked(7, 5, 12);
+        assert_eq!(inst.opcode, opcodes::COPY_MASKED);
+        assert_eq!(inst.output_ptr, 12);
+        assert_eq!(inst.data_size, 5);
+        assert_eq!(inst.param0, 7);
+    }
+
+    #[test]
+    fn test_clip_elementwise_bound_encoding() {
+        let both = GpuInstruction::clip_elementwise(3, 4, Some(0), Some(4));
+        assert_eq!(both.opcode, opcodes::CLIP_ELEMENTWISE);
+        assert_eq!(both.input_ptr, 3);
+        assert_eq!(both.output_ptr, 3);
+        assert_eq!(both.param0, 0);
+        assert_eq!(both.param1, 4);
+
+        let min_only = GpuInstruction::clip_elementwise(3, 4, Some(2), None);
+        assert_eq!(min_only.param0, 2);
+        assert_eq!(min_only.param1, CLIP_BOUND_NONE);
+
+        let max_only = GpuInstruction::clip_elementwise(3, 4, None, Some(2));
+        assert_eq!(max_only.param0, CLIP_BOUND_NONE);
+        assert_eq!(max_only.param1, 2);
+    }
+
+    #[test]
+    fn test_elem_wise_buffers_instructions() {
+        let add = GpuInstruction::elem_wise_buffers_add(9, 3, 6, 3);
+        assert_eq!(add.opcode, opcodes::ELEM_WISE_BUFFERS_ADD);
+        assert_eq!(add.output_ptr, 9);
+        assert_eq!(add.data_size, 3);
+        assert_eq!(add.param0, 6);
+        assert_eq!(add.param1, 3);
+
+        let mul = GpuInstruction::elem_wise_buffers_mul(9, 3, 6, 3);
+        assert_eq!(mul.opcode, opcodes::ELEM_WISE_BUFFERS_MUL);
+        assert_eq!(mul.param1, 3);
+    }
+
+    #[test]
+    fn test_buffer_heads_instructions() {
+        let mul = GpuInstruction::multiply_buffer_heads(0, 8, 6, 6, 2);
+        assert_eq!(mul.opcode, opcodes::MULTIPLY_BUFFER_HEADS);
+        assert_eq!(mul.input_ptr, 0);
+        assert_eq!(mul.output_ptr, 8);
+        assert_eq!(mul.data_size, 6);
+        assert_eq!(mul.param0, 6);
+        assert_eq!(mul.param1, 2);
+
+        let add = GpuInstruction::add_buffer_heads(0, 8, 6, 6, 2);
+        assert_eq!(add.opcode, opcodes::ADD_BUFFER_HEADS);
+    }
+
+    #[test]
+    fn test_reduce_sum_instruction() {
+        let inst = GpuInstruction::reduce_sum(2, 10, 5);
+        assert_eq!(inst.opcode, opcodes::REDUCE_SUM);
+        assert_eq!(inst.input_ptr, 2);
+        assert_eq!(inst.output_ptr, 10);
+        assert_eq!(inst.data_size, 5);
     }
 
     #[test]

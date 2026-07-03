@@ -391,8 +391,11 @@ mod tests {
         const SOFTPLUS_DELTA: f32 = 1e-7;
 
         // softplus(x) = log(1 + exp(x))
-        // At x=0: log(2) = 0.6931471805599453
-        assert!((Activation::Softplus.apply_single(0.0) - 0.6931472).abs() < SOFTPLUS_DELTA);
+        // At x=0: log(2)
+        assert!(
+            (Activation::Softplus.apply_single(0.0) - std::f32::consts::LN_2).abs()
+                < SOFTPLUS_DELTA
+        );
         // At x=1: log(1 + e) = 1.3132616875182228 (f32 rounds to 1.3132616)
         assert!((Activation::Softplus.apply_single(1.0) - 1.3132616).abs() < SOFTPLUS_DELTA);
         // At x=-1: log(1 + 1/e) = 0.31326168751822286
@@ -411,7 +414,7 @@ mod tests {
 
         assert!(values[0] < SOFTPLUS_DELTA); // ~0
         assert!((values[1] - 0.3132617).abs() < SOFTPLUS_DELTA);
-        assert!((values[2] - 0.6931472).abs() < SOFTPLUS_DELTA);
+        assert!((values[2] - std::f32::consts::LN_2).abs() < SOFTPLUS_DELTA);
         assert!((values[3] - 1.3132616).abs() < SOFTPLUS_DELTA);
         assert!((values[4] - 100.0).abs() < SOFTPLUS_DELTA);
     }

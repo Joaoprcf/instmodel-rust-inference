@@ -14,6 +14,7 @@ use crate::utils::dot::{DotKernel, dot};
 /// This instruction takes a query buffer and a key buffer, applies a linear
 /// transformation to the key, normalizes with softmax, and multiplies
 /// element-wise with the query buffer.
+#[derive(Clone)]
 pub struct AttentionInstruction {
     query_ptr: usize,
     key_ptr: usize,
@@ -114,6 +115,42 @@ impl Instruction for AttentionInstruction {
         self.apply_softmax(unified_computation_buffer);
         self.apply_elementwise_multiply(unified_computation_buffer);
         Ok(())
+    }
+
+    fn set_dense_params(
+        &mut self,
+        weights: &[f32],
+        bias: &[f32],
+    ) -> Result<(), InstructionModelError> {
+        if weights.len() != self.weights.len() || bias.len() != self.bias.len() {
+            return Err(InstructionModelError::ThetaLengthMismatch {
+                expected: self.weights.len() + self.bias.len(),
+                got: weights.len() + bias.len(),
+            });
+        }
+        self.weights.copy_from_slice(weights);
+        self.bias.copy_from_slice(bias);
+        Ok(())
+    }
+
+    fn read_dense_params(
+        &self,
+        weights: &mut [f32],
+        bias: &mut [f32],
+    ) -> Result<(), InstructionModelError> {
+        if weights.len() != self.weights.len() || bias.len() != self.bias.len() {
+            return Err(InstructionModelError::ThetaLengthMismatch {
+                expected: self.weights.len() + self.bias.len(),
+                got: weights.len() + bias.len(),
+            });
+        }
+        weights.copy_from_slice(&self.weights);
+        bias.copy_from_slice(&self.bias);
+        Ok(())
+    }
+
+    fn clone_box(&self) -> Option<Box<dyn Instruction>> {
+        Some(Box::new(self.clone()))
     }
 }
 

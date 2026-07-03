@@ -4,6 +4,7 @@ use crate::errors::InstructionModelError;
 use crate::instructions::Instruction;
 
 /// Represents an element-wise addition operation that sums multiple input buffers.
+#[derive(Clone)]
 pub struct ElemWiseBuffersAddInstruction {
     input_ptrs: Vec<usize>,
     output_ptr: usize,
@@ -58,5 +59,9 @@ impl Instruction for ElemWiseBuffersAddInstruction {
         }
 
         Ok(())
+    }
+
+    fn clone_box(&self) -> Option<Box<dyn Instruction>> {
+        Some(Box::new(self.clone()))
     }
 }

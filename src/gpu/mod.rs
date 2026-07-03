@@ -39,9 +39,17 @@
 pub mod errors;
 pub mod gpu_instruction;
 pub mod gpu_model;
+pub mod population;
+#[cfg(feature = "gpu-runtime")]
+pub mod runtime;
 pub mod shaders;
 
-pub use errors::{GpuModelError, GpuModelResult};
+#[cfg(feature = "gpu-runtime")]
+pub use errors::GpuRuntimeError;
+pub use errors::{GpuModelError, GpuModelResult, PopulationError};
 pub use gpu_instruction::GpuInstruction;
 pub use gpu_model::GpuModel;
+pub use population::PopulationPack;
+#[cfg(feature = "gpu-runtime")]
+pub use runtime::{GpuContext, GpuContextOptions, PopulationEvaluator};
 pub use shaders::get_instmodel_wgsl;

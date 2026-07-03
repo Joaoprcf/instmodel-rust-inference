@@ -37,6 +37,13 @@ const OPCODE_ACTIVATION: u32 = 2u;
 const OPCODE_ELEM_WISE_ADD: u32 = 3u;
 const OPCODE_ELEM_WISE_MUL: u32 = 4u;
 const OPCODE_COPY: u32 = 5u;
+const OPCODE_COPY_MASKED: u32 = 6u;
+const OPCODE_CLIP_ELEMENTWISE: u32 = 7u;
+const OPCODE_ELEM_WISE_BUFFERS_ADD: u32 = 8u;
+const OPCODE_ELEM_WISE_BUFFERS_MUL: u32 = 9u;
+const OPCODE_MULTIPLY_BUFFER_HEADS: u32 = 10u;
+const OPCODE_ADD_BUFFER_HEADS: u32 = 11u;
+const OPCODE_REDUCE_SUM: u32 = 12u;
 
 // Read u32 value from f32 array at model_offset + field_index (bitcast)
 fn read_header_u32(model_offset: u32, field_index: u32) -> u32 {
@@ -145,6 +152,80 @@ fn predict(
             }
             case OPCODE_COPY: {
                 execute_copy(
+                    compute_buffer,
+                    input_ptr,
+                    output_ptr,
+                    data_size
+                );
+            }
+            case OPCODE_COPY_MASKED: {
+                // param0 = pointer-list offset (relative to params region)
+                execute_copy_masked(
+                    model_offset,
+                    compute_buffer,
+                    output_ptr,
+                    data_size,
+                    params_offset + param0
+                );
+            }
+            case OPCODE_CLIP_ELEMENTWISE: {
+                // param0/param1 = min/max params offsets (relative);
+                // CLIP_BOUND_NONE marks an absent bound, so the offsets are
+                // resolved inside after the sentinel check.
+                execute_clip_elementwise(
+                    model_offset,
+                    compute_buffer,
+                    input_ptr,
+                    data_size,
+                    params_offset,
+                    param0,
+                    param1
+                );
+            }
+            case OPCODE_ELEM_WISE_BUFFERS_ADD: {
+                // param0 = pointer-list offset (relative), param1 = input count
+                execute_elem_wise_buffers_add(
+                    model_offset,
+                    compute_buffer,
+                    output_ptr,
+                    data_size,
+                    params_offset + param0,
+                    param1
+                );
+            }
+            case OPCODE_ELEM_WISE_BUFFERS_MUL: {
+                execute_elem_wise_buffers_mul(
+                    model_offset,
+                    compute_buffer,
+                    output_ptr,
+                    data_size,
+                    params_offset + param0,
+                    param1
+                );
+            }
+            case OPCODE_MULTIPLY_BUFFER_HEADS: {
+                // param0 = heads buffer pointer, param1 = head count
+                execute_multiply_buffer_heads(
+                    compute_buffer,
+                    input_ptr,
+                    output_ptr,
+                    data_size,
+                    param0,
+                    param1
+                );
+            }
+            case OPCODE_ADD_BUFFER_HEADS: {
+                execute_add_buffer_heads(
+                    compute_buffer,
+                    input_ptr,
+                    output_ptr,
+                    data_size,
+                    param0,
+                    param1
+                );
+            }
+            case OPCODE_REDUCE_SUM: {
+                execute_reduce_sum(
                     compute_buffer,
                     input_ptr,
                     output_ptr,

@@ -9,6 +9,7 @@ use crate::instructions::Instruction;
 /// Applies `max(x, min[i])` when a lower bound is present and `min(x, max[i])`
 /// when an upper bound is present, in that order, matching the reference
 /// `CLIP_ELEMENTWISE` (`np.maximum` then `np.minimum`).
+#[derive(Clone)]
 pub struct ClipElementwiseInstruction {
     output_ptr: usize,
     data_size: usize,
@@ -67,5 +68,9 @@ impl Instruction for ClipElementwiseInstruction {
         }
 
         Ok(())
+    }
+
+    fn clone_box(&self) -> Option<Box<dyn Instruction>> {
+        Some(Box::new(self.clone()))
     }
 }

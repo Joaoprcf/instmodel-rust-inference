@@ -50,6 +50,40 @@ pub trait Instruction: Send + Sync {
 
     /// Applies the instruction to the computation buffer.
     fn apply(&self, unified_computation_buffer: &mut [f32]) -> Result<(), InstructionModelError>;
+
+    /// Overwrites this instruction's dense parameters in place: `weights` is the
+    /// flattened row-major weight matrix and `bias` the bias vector.
+    ///
+    /// Only instructions that own dense parameters (dot and attention) support this;
+    /// the default implementation reports [`InstructionModelError::ThetaUnsupported`].
+    fn set_dense_params(
+        &mut self,
+        _weights: &[f32],
+        _bias: &[f32],
+    ) -> Result<(), InstructionModelError> {
+        Err(InstructionModelError::ThetaUnsupported {
+            reason: "instruction owns no dense parameters".to_string(),
+        })
+    }
+
+    /// Reads this instruction's dense parameters into `weights` (flattened row-major)
+    /// and `bias`. Same support surface as [`Instruction::set_dense_params`].
+    fn read_dense_params(
+        &self,
+        _weights: &mut [f32],
+        _bias: &mut [f32],
+    ) -> Result<(), InstructionModelError> {
+        Err(InstructionModelError::ThetaUnsupported {
+            reason: "instruction owns no dense parameters".to_string(),
+        })
+    }
+
+    /// Returns a boxed copy of this instruction, or `None` when the concrete type
+    /// does not support cloning (possible for external trait implementations, which
+    /// predate this method and inherit the default).
+    fn clone_box(&self) -> Option<Box<dyn Instruction>> {
+        None
+    }
 }
 
 /// Creates an instruction from instruction info and model context.

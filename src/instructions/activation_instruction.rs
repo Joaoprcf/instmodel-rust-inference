@@ -5,6 +5,7 @@ use crate::errors::InstructionModelError;
 use crate::instructions::Instruction;
 
 /// Represents an instruction that applies an activation function to values in place.
+#[derive(Clone)]
 pub struct ActivationInstruction {
     activation: Activation,
     output_ptr: usize,
@@ -36,5 +37,9 @@ impl Instruction for ActivationInstruction {
         let slice = &mut unified_computation_buffer[start..end];
         self.activation.apply_in_place(slice);
         Ok(())
+    }
+
+    fn clone_box(&self) -> Option<Box<dyn Instruction>> {
+        Some(Box::new(self.clone()))
     }
 }

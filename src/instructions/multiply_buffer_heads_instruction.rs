@@ -8,6 +8,7 @@ use crate::instructions::Instruction;
 /// Each head value from the heads buffer is multiplied across its corresponding
 /// segment of the data buffer. The head dimension is precomputed at construction
 /// time for maximum efficiency.
+#[derive(Clone)]
 pub struct MultiplyBufferHeadsInstruction {
     data_ptr: usize,
     heads_ptr: usize,
@@ -65,6 +66,10 @@ impl Instruction for MultiplyBufferHeadsInstruction {
         }
         Ok(())
     }
+
+    fn clone_box(&self) -> Option<Box<dyn Instruction>> {
+        Some(Box::new(self.clone()))
+    }
 }
 
 #[cfg(test)]
@@ -85,7 +90,7 @@ mod tests {
         instruction.apply(&mut buffer).unwrap();
 
         // First 4 elements multiplied by 2.0, next 4 by 3.0
-        let expected = vec![2.0, 4.0, 6.0, 8.0, 15.0, 18.0, 21.0, 24.0];
+        let expected = [2.0, 4.0, 6.0, 8.0, 15.0, 18.0, 21.0, 24.0];
         assert_eq!(&buffer[10..18], &expected[..]);
     }
 
@@ -144,7 +149,7 @@ mod tests {
         let instruction = MultiplyBufferHeadsInstruction::new(0, 4, 5, 4, 1).unwrap();
         instruction.apply(&mut buffer).unwrap();
 
-        let expected = vec![5.0, 10.0, 15.0, 20.0];
+        let expected = [5.0, 10.0, 15.0, 20.0];
         assert_eq!(&buffer[5..9], &expected[..]);
     }
 }

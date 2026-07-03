@@ -8,6 +8,7 @@ use crate::instructions::Instruction;
 /// Each head value from the heads buffer is added to its corresponding
 /// segment of the data buffer. The head dimension is precomputed at construction
 /// time for maximum efficiency.
+#[derive(Clone)]
 pub struct AddBufferHeadsInstruction {
     data_ptr: usize,
     heads_ptr: usize,
@@ -65,6 +66,10 @@ impl Instruction for AddBufferHeadsInstruction {
         }
         Ok(())
     }
+
+    fn clone_box(&self) -> Option<Box<dyn Instruction>> {
+        Some(Box::new(self.clone()))
+    }
 }
 
 #[cfg(test)]
@@ -85,7 +90,7 @@ mod tests {
         instruction.apply(&mut buffer).unwrap();
 
         // First 4 elements + 10.0, next 4 + 20.0
-        let expected = vec![11.0, 12.0, 13.0, 14.0, 25.0, 26.0, 27.0, 28.0];
+        let expected = [11.0, 12.0, 13.0, 14.0, 25.0, 26.0, 27.0, 28.0];
         assert_eq!(&buffer[10..18], &expected[..]);
     }
 
@@ -144,7 +149,7 @@ mod tests {
         let instruction = AddBufferHeadsInstruction::new(0, 4, 5, 4, 1).unwrap();
         instruction.apply(&mut buffer).unwrap();
 
-        let expected = vec![11.0, 12.0, 13.0, 14.0];
+        let expected = [11.0, 12.0, 13.0, 14.0];
         assert_eq!(&buffer[5..9], &expected[..]);
     }
 
@@ -160,7 +165,7 @@ mod tests {
         let instruction = AddBufferHeadsInstruction::new(0, 6, 8, 6, 2).unwrap();
         instruction.apply(&mut buffer).unwrap();
 
-        let expected = vec![4.0, 3.0, 2.0, -6.0, -5.0, -4.0];
+        let expected = [4.0, 3.0, 2.0, -6.0, -5.0, -4.0];
         assert_eq!(&buffer[8..14], &expected[..]);
     }
 }

@@ -54,7 +54,11 @@ pub struct UnusedComputationError {
 }
 
 /// Errors that can occur during instruction model creation, validation, or execution.
+///
+/// Marked `#[non_exhaustive]` since 1.0.0 so future variants can be added without
+/// a breaking change; match with a wildcard arm.
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum InstructionModelError {
     #[error("Invalid feature format: {feature}")]
     InvalidFeatureFormat { feature: String },
@@ -315,6 +319,25 @@ pub enum InstructionModelError {
         instruction_index: usize,
         buffer_index: usize,
         overwritten_by: usize,
+    },
+
+    #[error("Flat parameter vector length mismatch: expected {expected} but got {got}")]
+    ThetaLengthMismatch { expected: usize, got: usize },
+
+    #[error("Flat parameter operations are not supported: {reason}")]
+    ThetaUnsupported { reason: String },
+
+    #[error("Instruction {instruction_index} does not support cloning")]
+    CloneUnsupported { instruction_index: usize },
+
+    #[error(
+        "Weights matrix {slot} is jagged: row {row} has {got} columns but row 0 has {expected}"
+    )]
+    JaggedWeightsMatrix {
+        slot: usize,
+        row: usize,
+        expected: usize,
+        got: usize,
     },
 }
 

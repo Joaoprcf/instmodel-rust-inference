@@ -4,6 +4,7 @@ use crate::errors::InstructionModelError;
 use crate::instructions::Instruction;
 
 /// Represents an instruction that copies data from specific indexed positions.
+#[derive(Clone)]
 pub struct CopyMaskedInstruction {
     output_ptr: usize,
     input_pointers: Vec<usize>,
@@ -34,5 +35,9 @@ impl Instruction for CopyMaskedInstruction {
             unified_computation_buffer[self.output_ptr + i] = unified_computation_buffer[input_ptr];
         }
         Ok(())
+    }
+
+    fn clone_box(&self) -> Option<Box<dyn Instruction>> {
+        Some(Box::new(self.clone()))
     }
 }

@@ -7,6 +7,7 @@ use crate::instructions::Instruction;
 ///
 /// This instruction computes the sum of all elements in the input buffer
 /// and stores the result as a single value in the output buffer.
+#[derive(Clone)]
 pub struct ReduceSumInstruction {
     input_ptr: usize,
     output_ptr: usize,
@@ -38,6 +39,10 @@ impl Instruction for ReduceSumInstruction {
             .sum();
         unified_computation_buffer[self.output_ptr] = sum;
         Ok(())
+    }
+
+    fn clone_box(&self) -> Option<Box<dyn Instruction>> {
+        Some(Box::new(self.clone()))
     }
 }
 

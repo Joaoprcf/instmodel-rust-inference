@@ -29,6 +29,16 @@ const MAX_COMPUTE_BUFFER: u32 = {max_compute_buffer}u;
 
 {copy}
 
+{copy_masked}
+
+{clip_elementwise}
+
+{elem_wise_buffers}
+
+{buffer_heads}
+
+{reduce_sum}
+
 {instmodel}
 "#,
         max_compute_buffer = max_compute_buffer,
@@ -38,6 +48,11 @@ const MAX_COMPUTE_BUFFER: u32 = {max_compute_buffer}u;
         elem_wise_add = include_str!("instructions/elem_wise_add.wgsl"),
         elem_wise_mul = include_str!("instructions/elem_wise_mul.wgsl"),
         copy = include_str!("instructions/copy.wgsl"),
+        copy_masked = include_str!("instructions/copy_masked.wgsl"),
+        clip_elementwise = include_str!("instructions/clip_elementwise.wgsl"),
+        elem_wise_buffers = include_str!("instructions/elem_wise_buffers.wgsl"),
+        buffer_heads = include_str!("instructions/buffer_heads.wgsl"),
+        reduce_sum = include_str!("instructions/reduce_sum.wgsl"),
         instmodel = include_str!("instmodel.wgsl"),
     )
 }
