@@ -26,6 +26,10 @@ pub struct GpuContextOptions {
     /// Ask wgpu for its fallback (software) adapter explicitly — mainly for
     /// tests.
     pub force_fallback_adapter: bool,
+    /// Device limits to request instead of the wgpu defaults — e.g. a larger
+    /// `max_compute_workgroup_storage_size` for kernels built on
+    /// [`get_instmodel_wgsl_lanes`](crate::gpu::shaders::get_instmodel_wgsl_lanes).
+    pub required_limits: Option<wgpu::Limits>,
 }
 
 /// An initialized wgpu device/queue pair.
@@ -56,7 +60,13 @@ impl GpuContext {
         }
 
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default(), None)
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    required_limits: options.required_limits.clone().unwrap_or_default(),
+                    ..Default::default()
+                },
+                None,
+            )
             .block_on()
             .map_err(|source| GpuRuntimeError::DeviceRequestFailed {
                 message: source.to_string(),

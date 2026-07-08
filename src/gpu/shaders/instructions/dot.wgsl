@@ -18,19 +18,25 @@ fn execute_dot(
     let bias_offset = weights_offset + output_size * input_size;
 
     for (var out_idx: u32 = 0u; out_idx < output_size; out_idx = out_idx + 1u) {
-        var sum: f32 = 0.0;
         let row_offset = weights_offset + out_idx * input_size;
 
-        // 4-way unrolled dot product for better performance
+        // 4-way unrolled dot product with independent accumulators, so four
+        // FMA chains stay in flight instead of serializing on one `sum`.
+        var sum0: f32 = 0.0;
+        var sum1: f32 = 0.0;
+        var sum2: f32 = 0.0;
+        var sum3: f32 = 0.0;
         var i: u32 = 0u;
         let unroll_end = input_size & ~3u;  // Round down to multiple of 4
 
         for (; i < unroll_end; i = i + 4u) {
-            sum = sum + model_data[model_offset + row_offset + i] * (*compute_buffer)[input_ptr + i];
-            sum = sum + model_data[model_offset + row_offset + i + 1u] * (*compute_buffer)[input_ptr + i + 1u];
-            sum = sum + model_data[model_offset + row_offset + i + 2u] * (*compute_buffer)[input_ptr + i + 2u];
-            sum = sum + model_data[model_offset + row_offset + i + 3u] * (*compute_buffer)[input_ptr + i + 3u];
+            sum0 = sum0 + model_data[model_offset + row_offset + i] * (*compute_buffer)[input_ptr + i];
+            sum1 = sum1 + model_data[model_offset + row_offset + i + 1u] * (*compute_buffer)[input_ptr + i + 1u];
+            sum2 = sum2 + model_data[model_offset + row_offset + i + 2u] * (*compute_buffer)[input_ptr + i + 2u];
+            sum3 = sum3 + model_data[model_offset + row_offset + i + 3u] * (*compute_buffer)[input_ptr + i + 3u];
         }
+
+        var sum: f32 = (sum0 + sum2) + (sum1 + sum3);
 
         // Handle remainder
         for (; i < input_size; i = i + 1u) {

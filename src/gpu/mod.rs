@@ -43,6 +43,7 @@ pub mod population;
 #[cfg(feature = "gpu-runtime")]
 pub mod runtime;
 pub mod shaders;
+pub mod specialize;
 
 #[cfg(feature = "gpu-runtime")]
 pub use errors::GpuRuntimeError;
@@ -52,4 +53,5 @@ pub use gpu_model::GpuModel;
 pub use population::PopulationPack;
 #[cfg(feature = "gpu-runtime")]
 pub use runtime::{GpuContext, GpuContextOptions, PopulationEvaluator};
-pub use shaders::get_instmodel_wgsl;
+pub use shaders::{get_instmodel_wgsl, get_instmodel_wgsl_lanes};
+pub use specialize::get_specialized_wgsl_lanes;

@@ -218,6 +218,7 @@ fn software_adapters_are_rejected_by_default() {
     let options = GpuContextOptions {
         allow_software_adapter: false,
         force_fallback_adapter: true,
+        required_limits: None,
     };
     match GpuContext::new(&options) {
         Err(GpuRuntimeError::SoftwareAdapterRejected { .. }) | Err(GpuRuntimeError::NoAdapter) => {}
