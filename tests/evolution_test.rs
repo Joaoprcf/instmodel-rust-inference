@@ -1,6 +1,3 @@
-//! EsOptimizer integration tests: determinism, mirrored sampling, the exact
-//! update rule, convergence, and interop with the θ-mutation APIs.
-
 use instmodel_inference::activation::Activation;
 use instmodel_inference::errors::EvolutionError;
 use instmodel_inference::evolution::{EsConfig, EsOptimizer, cosine_anneal, fill_perturbation};

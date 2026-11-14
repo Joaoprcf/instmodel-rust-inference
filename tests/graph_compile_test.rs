@@ -1,8 +1,3 @@
-//! Integration tests for the graph DSL and compiler: layout offsets, weight
-//! sharing, per-op numeric parity against hand-computed references, in-place
-//! fusion locked through the real model validator, parallel-predict parity,
-//! and plan-time error cases.
-
 use std::collections::HashMap;
 
 use instmodel_inference::activation::Activation;
@@ -10,7 +5,7 @@ use instmodel_inference::errors::GraphError;
 use instmodel_inference::graph::Graph;
 use instmodel_inference::params::{ParamCopy, ParamKind};
 use instmodel_inference::{
-    Constant, InstructionModel, InstructionModelInfo, ParamLayout, PredictConfig,
+    Constant, InstructionModel, InstructionModelInfo, ModelGraph, ParamLayout, PredictConfig,
 };
 
 /// Distinct, exactly-f32-representable θ.
@@ -84,21 +79,6 @@ fn shared_weight_is_one_slot_and_patches_forward_pass() {
 }
 
 #[test]
-fn concat_forward_parity() {
-    let graph = Graph::new();
-    let a = graph.input(2, None);
-    let b = graph.input(3, None);
-    let y = graph.concat(&[&b, &a]);
-    let model_graph = graph.model(vec![&a, &b], &y);
-
-    let model = model_graph.to_model(&[]).unwrap();
-    assert_eq!(
-        model.predict(&[1.0, 2.0, 10.0, 20.0, 30.0]).unwrap(),
-        vec![10.0, 20.0, 30.0, 1.0, 2.0]
-    );
-}
-
-#[test]
 fn fanout_diamond_compiles_once_and_predicts() {
     let graph = Graph::new();
     let x = graph.input(2, None);
@@ -150,307 +130,247 @@ fn deep_multibranch_layout_shapes() {
 }
 
 #[test]
-fn theta_len_mismatch_is_rejected() {
+fn layout_errors_are_reported() {
     let graph = Graph::new();
     let x = graph.input(3, None);
     let hidden = graph.dense(&x, 4, Some(Activation::Relu));
     let y = graph.dense(&hidden, 1, None);
-    let model_graph = graph.model(vec![&x], &y);
-
     assert!(matches!(
-        model_graph.compile(&[0.0; 3]),
+        graph.model(vec![&x], &y).compile(&[0.0; 3]),
         Err(GraphError::ThetaLenMismatch {
             expected: 21,
             got: 3
         })
     ));
-}
 
-#[test]
-fn shared_weight_shape_mismatch_is_rejected() {
-    let graph = Graph::new();
-    let x = graph.input(3, None);
     let shared = graph.weight();
     let h1 = graph.dense_shared(&x, 4, None, shared);
     let h2 = graph.dense_shared(&h1, 4, None, shared);
-    let model_graph = graph.model(vec![&x], &h2);
-
     assert!(matches!(
-        model_graph.weights_map(),
+        graph.model(vec![&x], &h2).weights_map(),
         Err(GraphError::SharedWeightShapeMismatch {
             first: [4, 3],
             again: [4, 4],
             ..
         })
     ));
-}
 
-#[test]
-fn unreached_declared_input_is_rejected() {
-    let graph = Graph::new();
-    let x = graph.input(2, None);
     let unused = graph.input(2, None);
-    let y = graph.dense(&x, 1, None);
-    let model_graph = graph.model(vec![&x, &unused], &y);
-
     assert!(matches!(
-        model_graph.weights_map(),
+        graph.model(vec![&x, &unused], &y).weights_map(),
         Err(GraphError::InputNotVisited)
     ));
-}
-
-#[test]
-fn graph_without_inputs_is_rejected() {
-    let graph = Graph::new();
-    let x = graph.input(2, None);
-    let model_graph = graph.model(vec![], &x);
-
     assert!(matches!(
-        model_graph.weights_map(),
+        graph.model(vec![], &x).weights_map(),
         Err(GraphError::NoInputs)
     ));
 }
 
 #[test]
-fn feature_names_survive_when_every_scalar_is_named() {
-    let graph = Graph::new();
-    let x = graph.input(2, Some(vec!["a".to_string(), "b".to_string()]));
-    let z = graph.input(1, Some(vec!["c".to_string()]));
-    let y = graph.dense(&graph.concat(&[&x, &z]), 1, None);
-    let model_graph = graph.model(vec![&x, &z], &y);
-
-    let info = model_graph.compile_zeroed().unwrap();
-    assert_eq!(
-        info.features,
-        Some(vec!["a".to_string(), "b".to_string(), "c".to_string()])
-    );
-    assert_eq!(info.feature_size, Some(3));
+fn feature_names_only_survive_when_every_scalar_is_named() {
+    for (z_names, expected) in [
+        (
+            Some(vec!["c".to_string()]),
+            Some(vec!["a".to_string(), "b".to_string(), "c".to_string()]),
+        ),
+        (None, None),
+    ] {
+        let graph = Graph::new();
+        let x = graph.input(2, Some(vec!["a".to_string(), "b".to_string()]));
+        let z = graph.input(1, z_names);
+        let y = graph.dense(&graph.concat(&[&x, &z]), 1, None);
+        let info = graph.model(vec![&x, &z], &y).compile_zeroed().unwrap();
+        assert_eq!(info.features, expected);
+        assert_eq!(info.feature_size, Some(3));
+    }
 }
 
-#[test]
-fn partially_named_inputs_expose_no_feature_names() {
-    let graph = Graph::new();
-    let x = graph.input(2, Some(vec!["a".to_string(), "b".to_string()]));
-    let z = graph.input(1, None);
-    let y = graph.dense(&graph.concat(&[&x, &z]), 1, None);
-    let model_graph = graph.model(vec![&x, &z], &y);
-
-    let info = model_graph.compile_zeroed().unwrap();
-    assert_eq!(info.features, None);
-    assert_eq!(info.feature_size, Some(3));
-}
+type Build = fn(&Graph) -> ModelGraph;
 
 #[test]
-fn dense_with_activation_parity() {
-    let graph = Graph::new();
-    let x = graph.input(3, None);
-    let y = graph.dense(&x, 2, Some(Activation::Relu));
-    let model_graph = graph.model(vec![&x], &y);
-
-    // W = [[1,1,1],[-1,-1,-1]], b = [0.5, 0.5].
-    let theta = [1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 0.5, 0.5];
-    let model = model_graph.to_model(&theta).unwrap();
-    assert_eq!(model.predict(&[1.0, 2.0, 3.0]).unwrap(), vec![6.5, 0.0]);
-}
-
-#[test]
-fn gather_parity() {
-    let graph = Graph::new();
-    let x = graph.input(4, None);
-    let y = graph.gather(&x, vec![3, 0, 3]);
-    let model_graph = graph.model(vec![&x], &y);
-
-    let model = model_graph.to_model(&[]).unwrap();
-    assert_eq!(
-        model.predict(&[10.0, 20.0, 30.0, 40.0]).unwrap(),
-        vec![40.0, 10.0, 40.0]
-    );
-}
-
-#[test]
-fn activation_parity() {
-    let graph = Graph::new();
-    let x = graph.input(3, None);
-    let y = graph.activation(&x, Activation::Relu);
-    let model_graph = graph.model(vec![&x], &y);
-
-    let model = model_graph.to_model(&[]).unwrap();
-    assert_eq!(
-        model.predict(&[-1.0, 0.0, 2.0]).unwrap(),
-        vec![0.0, 0.0, 2.0]
-    );
-}
-
-#[test]
-fn clip_parity() {
-    let graph = Graph::new();
-    let x = graph.input(3, None);
-    let y = graph.clip(
-        &x,
-        Some(Constant::Scalar(-1.0)),
-        Some(Constant::Scalar(1.0)),
-    );
-    let model_graph = graph.model(vec![&x], &y);
-    let model = model_graph.to_model(&[]).unwrap();
-    assert_eq!(
-        model.predict(&[-5.0, 0.5, 3.0]).unwrap(),
-        vec![-1.0, 0.5, 1.0]
-    );
-
-    let lower_only = Graph::new();
-    let x = lower_only.input(3, None);
-    let y = lower_only.clip(&x, Some(Constant::Scalar(0.0)), None);
-    let model = lower_only.model(vec![&x], &y).to_model(&[]).unwrap();
-    assert_eq!(
-        model.predict(&[-5.0, 0.5, 3.0]).unwrap(),
-        vec![0.0, 0.5, 3.0]
-    );
-}
-
-#[test]
-fn add_const_parity() {
-    let graph = Graph::new();
-    let x = graph.input(2, None);
-    let y = graph.add_const(&x, Constant::PerElement(vec![10.0, 20.0]));
-    let model_graph = graph.model(vec![&x], &y);
-
-    let model = model_graph.to_model(&[]).unwrap();
-    assert_eq!(model.predict(&[1.0, 2.0]).unwrap(), vec![11.0, 22.0]);
-}
-
-#[test]
-fn mul_const_parity() {
-    let graph = Graph::new();
-    let x = graph.input(2, None);
-    let y = graph.mul_const(&x, Constant::Scalar(2.0));
-    let model_graph = graph.model(vec![&x], &y);
-
-    let model = model_graph.to_model(&[]).unwrap();
-    assert_eq!(model.predict(&[1.5, -3.0]).unwrap(), vec![3.0, -6.0]);
-}
-
-#[test]
-fn normalize_parity() {
-    let graph = Graph::new();
-    let x = graph.input(2, None);
-    let y = graph.normalize(&x, vec![1.0, 2.0], vec![2.0, 4.0]);
-    let model_graph = graph.model(vec![&x], &y);
-
-    let model = model_graph.to_model(&[]).unwrap();
-    assert_eq!(model.predict(&[3.0, 6.0]).unwrap(), vec![1.0, 1.0]);
-}
-
-#[test]
-fn add_buffers_parity() {
-    let graph = Graph::new();
-    let a = graph.input(2, None);
-    let b = graph.input(2, None);
-    let y = graph.add(&[&a, &b, &a]);
-    let model_graph = graph.model(vec![&a, &b], &y);
-
-    let model = model_graph.to_model(&[]).unwrap();
-    assert_eq!(
-        model.predict(&[1.0, 2.0, 10.0, 20.0]).unwrap(),
-        vec![12.0, 24.0]
-    );
-}
-
-#[test]
-fn mul_buffers_parity() {
-    let graph = Graph::new();
-    let a = graph.input(2, None);
-    let b = graph.input(2, None);
-    let y = graph.mul(&[&a, &b]);
-    let model_graph = graph.model(vec![&a, &b], &y);
-
-    let model = model_graph.to_model(&[]).unwrap();
-    assert_eq!(
-        model.predict(&[1.0, 2.0, 10.0, 20.0]).unwrap(),
-        vec![10.0, 40.0]
-    );
-}
-
-#[test]
-fn add_heads_parity() {
-    let graph = Graph::new();
-    let data = graph.input(6, None);
-    let heads = graph.input(2, None);
-    let y = graph.add_heads(&data, &heads);
-    let model_graph = graph.model(vec![&data, &heads], &y);
-
-    let model = model_graph.to_model(&[]).unwrap();
-    assert_eq!(
-        model
-            .predict(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 10.0, 20.0])
-            .unwrap(),
-        vec![11.0, 12.0, 13.0, 24.0, 25.0, 26.0]
-    );
-}
-
-#[test]
-fn mul_heads_parity() {
-    let graph = Graph::new();
-    let data = graph.input(6, None);
-    let heads = graph.input(2, None);
-    let y = graph.mul_heads(&data, &heads);
-    let model_graph = graph.model(vec![&data, &heads], &y);
-
-    let model = model_graph.to_model(&[]).unwrap();
-    assert_eq!(
-        model
-            .predict(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 2.0, 3.0])
-            .unwrap(),
-        vec![2.0, 4.0, 6.0, 12.0, 15.0, 18.0]
-    );
-}
-
-#[test]
-fn reduce_sum_parity() {
-    let graph = Graph::new();
-    let x = graph.input(4, None);
-    let y = graph.reduce_sum(&x);
-    let model_graph = graph.model(vec![&x], &y);
-
-    let model = model_graph.to_model(&[]).unwrap();
-    assert_eq!(model.predict(&[1.0, 2.0, 3.0, 4.0]).unwrap(), vec![10.0]);
-}
-
-#[test]
-fn attention_parity() {
-    let graph = Graph::new();
-    let query = graph.input(2, None);
-    let key = graph.input(2, None);
-    let y = graph.attention(&query, &key);
-    let model_graph = graph.model(vec![&query, &key], &y);
-
-    let layout = model_graph.weights_map().unwrap();
-    assert_eq!(layout.weight_shapes, vec![[2, 2]]);
-
-    // W = I, b = 0, key = [0,0] → scores [0,0] → softmax [0.5,0.5]
-    // → output = 0.5 · query (exact in f32).
-    let theta = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
-    let model = model_graph.to_model(&theta).unwrap();
-    assert_eq!(
-        model.predict(&[3.0, 5.0, 0.0, 0.0]).unwrap(),
-        vec![1.5, 2.5]
-    );
-}
-
-#[test]
-fn map_transform_parity() {
-    let graph = Graph::new();
-    let key = graph.input(1, None);
-    let mut map = HashMap::new();
-    map.insert("1".to_string(), vec![10.0, 20.0]);
-    map.insert("3".to_string(), vec![30.0, 40.0]);
-    let y = graph.map_transform(&key, map, vec![0.5, 0.25]);
-    let model_graph = graph.model(vec![&key], &y);
-
-    let model = model_graph.to_model(&[]).unwrap();
-    // The lookup key is round(input): 1.2 → "1", 2.6 → "3", 9 → default.
-    assert_eq!(model.predict(&[1.2]).unwrap(), vec![10.0, 20.0]);
-    assert_eq!(model.predict(&[2.6]).unwrap(), vec![30.0, 40.0]);
-    assert_eq!(model.predict(&[9.0]).unwrap(), vec![0.5, 0.25]);
+fn per_op_forward_parity() {
+    let heads_input: &[f32] = &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 10.0, 20.0];
+    type Samples = Vec<(&'static [f32], &'static [f32])>;
+    let cases: Vec<(&str, Build, &[f32], Samples)> = vec![
+        (
+            "concat",
+            |g| {
+                let (a, b) = (g.input(2, None), g.input(3, None));
+                g.model(vec![&a, &b], &g.concat(&[&b, &a]))
+            },
+            &[],
+            vec![(&[1.0, 2.0, 10.0, 20.0, 30.0], &[10.0, 20.0, 30.0, 1.0, 2.0])],
+        ),
+        (
+            // W = [[1,1,1],[-1,-1,-1]], b = [0.5, 0.5].
+            "dense_relu",
+            |g| {
+                let x = g.input(3, None);
+                g.model(vec![&x], &g.dense(&x, 2, Some(Activation::Relu)))
+            },
+            &[1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 0.5, 0.5],
+            vec![(&[1.0, 2.0, 3.0], &[6.5, 0.0])],
+        ),
+        (
+            "gather",
+            |g| {
+                let x = g.input(4, None);
+                g.model(vec![&x], &g.gather(&x, vec![3, 0, 3]))
+            },
+            &[],
+            vec![(&[10.0, 20.0, 30.0, 40.0], &[40.0, 10.0, 40.0])],
+        ),
+        (
+            "activation",
+            |g| {
+                let x = g.input(3, None);
+                g.model(vec![&x], &g.activation(&x, Activation::Relu))
+            },
+            &[],
+            vec![(&[-1.0, 0.0, 2.0], &[0.0, 0.0, 2.0])],
+        ),
+        (
+            "clip_both",
+            |g| {
+                let x = g.input(3, None);
+                let y = g.clip(
+                    &x,
+                    Some(Constant::Scalar(-1.0)),
+                    Some(Constant::Scalar(1.0)),
+                );
+                g.model(vec![&x], &y)
+            },
+            &[],
+            vec![(&[-5.0, 0.5, 3.0], &[-1.0, 0.5, 1.0])],
+        ),
+        (
+            "clip_lower_only",
+            |g| {
+                let x = g.input(3, None);
+                g.model(vec![&x], &g.clip(&x, Some(Constant::Scalar(0.0)), None))
+            },
+            &[],
+            vec![(&[-5.0, 0.5, 3.0], &[0.0, 0.5, 3.0])],
+        ),
+        (
+            "add_const",
+            |g| {
+                let x = g.input(2, None);
+                g.model(
+                    vec![&x],
+                    &g.add_const(&x, Constant::PerElement(vec![10.0, 20.0])),
+                )
+            },
+            &[],
+            vec![(&[1.0, 2.0], &[11.0, 22.0])],
+        ),
+        (
+            "mul_const",
+            |g| {
+                let x = g.input(2, None);
+                g.model(vec![&x], &g.mul_const(&x, Constant::Scalar(2.0)))
+            },
+            &[],
+            vec![(&[1.5, -3.0], &[3.0, -6.0])],
+        ),
+        (
+            "normalize",
+            |g| {
+                let x = g.input(2, None);
+                g.model(vec![&x], &g.normalize(&x, vec![1.0, 2.0], vec![2.0, 4.0]))
+            },
+            &[],
+            vec![(&[3.0, 6.0], &[1.0, 1.0])],
+        ),
+        (
+            "add_buffers",
+            |g| {
+                let (a, b) = (g.input(2, None), g.input(2, None));
+                g.model(vec![&a, &b], &g.add(&[&a, &b, &a]))
+            },
+            &[],
+            vec![(&[1.0, 2.0, 10.0, 20.0], &[12.0, 24.0])],
+        ),
+        (
+            "mul_buffers",
+            |g| {
+                let (a, b) = (g.input(2, None), g.input(2, None));
+                g.model(vec![&a, &b], &g.mul(&[&a, &b]))
+            },
+            &[],
+            vec![(&[1.0, 2.0, 10.0, 20.0], &[10.0, 40.0])],
+        ),
+        (
+            "add_heads",
+            |g| {
+                let (data, heads) = (g.input(6, None), g.input(2, None));
+                g.model(vec![&data, &heads], &g.add_heads(&data, &heads))
+            },
+            &[],
+            vec![(heads_input, &[11.0, 12.0, 13.0, 24.0, 25.0, 26.0])],
+        ),
+        (
+            "mul_heads",
+            |g| {
+                let (data, heads) = (g.input(6, None), g.input(2, None));
+                g.model(vec![&data, &heads], &g.mul_heads(&data, &heads))
+            },
+            &[],
+            vec![(heads_input, &[10.0, 20.0, 30.0, 80.0, 100.0, 120.0])],
+        ),
+        (
+            "reduce_sum",
+            |g| {
+                let x = g.input(4, None);
+                g.model(vec![&x], &g.reduce_sum(&x))
+            },
+            &[],
+            vec![(&[1.0, 2.0, 3.0, 4.0], &[10.0])],
+        ),
+        (
+            // W = I, b = 0, key = 0 → softmax [0.5, 0.5] → 0.5 · query.
+            "attention",
+            |g| {
+                let (query, key) = (g.input(2, None), g.input(2, None));
+                g.model(vec![&query, &key], &g.attention(&query, &key))
+            },
+            &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            vec![(&[3.0, 5.0, 0.0, 0.0], &[1.5, 2.5])],
+        ),
+        (
+            // The lookup key is round(input): 1.2 → "1", 2.6 → "3", 9 → default.
+            "map_transform",
+            |g| {
+                let key = g.input(1, None);
+                let map = HashMap::from([
+                    ("1".to_string(), vec![10.0, 20.0]),
+                    ("3".to_string(), vec![30.0, 40.0]),
+                ]);
+                g.model(vec![&key], &g.map_transform(&key, map, vec![0.5, 0.25]))
+            },
+            &[],
+            vec![
+                (&[1.2], &[10.0, 20.0]),
+                (&[2.6], &[30.0, 40.0]),
+                (&[9.0], &[0.5, 0.25]),
+            ],
+        ),
+        (
+            "input_passthrough",
+            |g| {
+                let x = g.input(3, None);
+                g.model(vec![&x], &x)
+            },
+            &[],
+            vec![(&[4.0, 5.0, 6.0], &[4.0, 5.0, 6.0])],
+        ),
+    ];
+    for (name, build, theta, samples) in cases {
+        let model = build(&Graph::new()).to_model(theta).unwrap();
+        for (input, expected) in samples {
+            assert_eq!(model.predict(input).unwrap(), expected, "{name}");
+        }
+    }
 }
 
 #[test]
@@ -490,7 +410,7 @@ fn in_place_output_is_materialized_into_last_buffer() {
 
 /// A graph touching most op kinds, used for parallel parity and layout
 /// round-trip checks.
-fn mixed_graph(graph: &Graph) -> instmodel_inference::ModelGraph {
+fn mixed_graph(graph: &Graph) -> ModelGraph {
     let x = graph.input(4, None);
     let heads = graph.input(2, None);
     let gathered = graph.gather(&x, vec![3, 2, 1, 0]);
@@ -683,17 +603,4 @@ fn structural_errors_are_reported() {
         graph.model(vec![&bracketed], &uses_bracketed).weights_map(),
         Err(GraphError::InvalidFeatureName { .. })
     ));
-}
-
-#[test]
-fn input_passthrough_output_predicts_identity() {
-    let graph = Graph::new();
-    let x = graph.input(3, None);
-    let model_graph = graph.model(vec![&x], &x);
-
-    let model = model_graph.to_model(&[]).unwrap();
-    assert_eq!(
-        model.predict(&[4.0, 5.0, 6.0]).unwrap(),
-        vec![4.0, 5.0, 6.0]
-    );
 }
