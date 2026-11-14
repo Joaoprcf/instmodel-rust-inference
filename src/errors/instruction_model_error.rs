@@ -53,10 +53,7 @@ pub struct UnusedComputationError {
     pub overwritten_by: usize,
 }
 
-/// Errors that can occur during instruction model creation, validation, or execution.
-///
-/// Marked `#[non_exhaustive]` since 1.0.0 so future variants can be added without
-/// a breaking change; match with a wildcard arm.
+/// Errors from model construction, validation or execution (`#[non_exhaustive]`).
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum InstructionModelError {

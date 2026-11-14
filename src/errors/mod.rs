@@ -1,8 +1,4 @@
-//! Error types for the neural inference library.
-//!
-//! This module contains specific error types used throughout the library,
-//! avoiding generic error wrappers like `anyhow` or `Box<dyn Error>` for better
-//! error handling and debugging.
+//! Error types.
 
 mod evolution_error;
 mod graph_error;

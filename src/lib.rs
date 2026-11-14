@@ -1,10 +1,8 @@
-//! Neural inference library for executing optimized computation sequences.
-//!
-//! This library provides functionality to run neural network inference using
-//! a sequence of instructions that operate on computation buffers. It supports
-//! various operations like dot products, activations, copying, and element-wise operations.
+//! Inference for instmodel JSON models: a validated instruction sequence executed over one
+//! unified f32 buffer, plus graph authoring, in-place θ mutation, ES training and GPU/WGSL paths.
 
 pub mod activation;
+pub mod benchmarks;
 pub mod errors;
 pub mod evolution;
 pub mod gpu;
@@ -17,9 +15,6 @@ pub mod instructions;
 pub mod parallel_predict;
 pub mod params;
 pub mod utils;
-
-// Benchmarks module
-pub mod benchmarks;
 
 pub use activation::Activation;
 pub use evolution::{EsConfig, EsOptimizer};

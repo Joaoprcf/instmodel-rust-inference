@@ -107,7 +107,7 @@ impl InstructionModel {
         })
     }
 
-    /// Computes the total feature size based on the provided instruction model information.
+    /// Feature count declared by `features` (`name[n]` counts n) or `feature_size`.
     pub fn calculate_feature_size(
         instruction_model_info: &InstructionModelInfo,
     ) -> InstructionModelResult<usize> {
@@ -174,7 +174,7 @@ impl InstructionModel {
         Ok((instructions, slot_owners))
     }
 
-    /// Validates the model using inference on input data and comparing the expected outputs with the predicted outputs.
+    /// Runs `inputs` and fails on the first output differing from `outputs` by more than `delta`.
     pub fn validate_model(
         &mut self,
         inputs: &[Vec<f32>],
@@ -204,15 +204,10 @@ impl InstructionModel {
                 });
             }
 
-            // Copy input to buffer
-            for (j, &value) in input.iter().enumerate() {
-                temporary_buffer[j] = value;
-            }
-
-            // Run prediction
+            temporary_buffer[..input.len()].copy_from_slice(input);
             self.predict_with_buffer(&mut temporary_buffer)?;
 
-            // Check results
+            // The error reports outputs up to and including the first mismatch.
             let mut computed_output = Vec::new();
             for j in 0..expected_output.len() {
                 let computed = temporary_buffer[self.output_index_start + j];
@@ -231,12 +226,12 @@ impl InstructionModel {
         Ok(())
     }
 
-    /// Returns the required memory size.
+    /// Unified buffer length required by [`Self::predict_with_buffer`].
     pub fn required_memory(&self) -> usize {
         self.output_index_end
     }
 
-    /// Predicts output using the provided computation buffer.
+    /// Runs the model in place; inputs occupy the buffer start, outputs the last buffer.
     pub fn predict_with_buffer(
         &self,
         unified_computation_buffer: &mut [f32],
@@ -255,7 +250,7 @@ impl InstructionModel {
         Ok(())
     }
 
-    /// Predicts output, allocating a new computation buffer.
+    /// Runs one sample using a thread-local scratch buffer and returns the output.
     pub fn predict(&self, input: &[f32]) -> InstructionModelResult<Vec<f32>> {
         if input.len() != self.feature_size {
             return Err(InstructionModelError::ValidationInputSizeMismatch {
@@ -282,7 +277,7 @@ impl InstructionModel {
         })
     }
 
-    /// Predicts a single output value.
+    /// Last output value.
     pub fn predict_single(&self, input: &[f32]) -> InstructionModelResult<f32> {
         let output = self.predict(input)?;
         Ok(output[output.len() - 1])
@@ -297,7 +292,7 @@ impl InstructionModel {
         execute_parallel_predict(self, inputs, &config)
     }
 
-    /// Gets the output value at a specific index.
+    /// Output `index` read from a buffer filled by [`Self::predict_with_buffer`].
     pub fn get_output(&self, unified_computation_buffer: &[f32], index: usize) -> f32 {
         unified_computation_buffer[self.output_index_start + index]
     }
