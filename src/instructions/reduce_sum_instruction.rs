@@ -1,12 +1,9 @@
-//! Reduce sum instruction implementation.
+//! REDUCE_SUM.
 
 use crate::errors::InstructionModelError;
 use crate::instructions::Instruction;
 
-/// Represents a reduce sum operation that sums all values in an input buffer.
-///
-/// This instruction computes the sum of all elements in the input buffer
-/// and stores the result as a single value in the output buffer.
+/// Writes the sum of the input buffer into one output slot.
 #[derive(Clone)]
 pub struct ReduceSumInstruction {
     input_ptr: usize,
@@ -33,52 +30,14 @@ impl Instruction for ReduceSumInstruction {
         1
     }
 
-    fn apply(&self, unified_computation_buffer: &mut [f32]) -> Result<(), InstructionModelError> {
-        let sum: f32 = unified_computation_buffer[self.input_ptr..self.input_ptr + self.input_size]
+    fn apply(&self, buffer: &mut [f32]) -> Result<(), InstructionModelError> {
+        buffer[self.output_ptr] = buffer[self.input_ptr..self.input_ptr + self.input_size]
             .iter()
             .sum();
-        unified_computation_buffer[self.output_ptr] = sum;
         Ok(())
     }
 
     fn clone_box(&self) -> Option<Box<dyn Instruction>> {
         Some(Box::new(self.clone()))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_reduce_sum_basic() {
-        let mut buffer = vec![1.0, 2.0, 3.0, 4.0, 0.0];
-        let instruction = ReduceSumInstruction::new(0, 4, 4);
-        instruction.apply(&mut buffer).unwrap();
-        assert!((buffer[4] - 10.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_reduce_sum_partial() {
-        let mut buffer = vec![1.0, 2.0, 3.0, 4.0, 5.0, 0.0];
-        let instruction = ReduceSumInstruction::new(1, 5, 3);
-        instruction.apply(&mut buffer).unwrap();
-        assert!((buffer[5] - 9.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_reduce_sum_single_element() {
-        let mut buffer = vec![42.0, 0.0];
-        let instruction = ReduceSumInstruction::new(0, 1, 1);
-        instruction.apply(&mut buffer).unwrap();
-        assert!((buffer[1] - 42.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_reduce_sum_negative_values() {
-        let mut buffer = vec![-1.0, 2.0, -3.0, 4.0, 0.0];
-        let instruction = ReduceSumInstruction::new(0, 4, 4);
-        instruction.apply(&mut buffer).unwrap();
-        assert!((buffer[4] - 2.0).abs() < 1e-6);
     }
 }

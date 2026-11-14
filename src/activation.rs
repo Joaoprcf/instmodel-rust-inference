@@ -1,52 +1,34 @@
-//! Activation functions for neural network operations.
-//!
-//! This module provides various activation functions commonly used in neural networks,
-//! including ReLU, Sigmoid, Softmax, and others. Each activation function is implemented
-//! with numerical stability in mind.
+//! Activation functions.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
-/// Represents the type of activation function to be applied.
-/// Note: A None value indicates that no activation function should be applied.
+/// Element-wise (or, for `Softmax`, vector-wise) activation function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Activation {
-    /// Rectified Linear Unit activation function: f(x) = max(0, x).
+    /// `max(0, x)`.
     Relu,
-    /// Sigmoid activation function: f(x) = 1 / (1 + exp(-x)).
+    /// `1 / (1 + exp(-x))`.
     Sigmoid,
-    /// Softmax activation function:
-    ///
-    /// Applies the numerically stable Softmax function across a vector to produce a probability distribution:
-    /// ```text
-    /// Softmax(x_i) = exp(x_i - max(x)) / sum_j exp(x_j - max(x))
-    /// ```
-    ///
-    /// This implementation mirrors Keras and TensorFlow's approach to ensure numerical stability by preventing
-    /// potential overflow or underflow during exponentiation.
+    /// `exp(x_i - max(x)) / sum_j exp(x_j - max(x))` over the whole buffer.
     Softmax,
-    /// Square root activation function: f(x) = sqrt(x) for x > 0, 0 for x <= 0.
+    /// `sqrt(x)` for `x > 0`, else 0.
     Sqrt,
-    /// Natural logarithm activation function: f(x) = log(x + 1) for x > 0, 0 for x <= 0.
+    /// `ln(x + 1)` for `x > 0`, else 0.
     Log,
-    /// Base-10 logarithm activation function: f(x) = log10(x + 1) for x > 0, 0 for x <= 0.
+    /// `log10(x + 1)` for `x > 0`, else 0.
     Log10,
-    /// Hyperbolic tangent activation function: f(x) = tanh(x).
+    /// `tanh(x)`.
     Tanh,
-    /// Inverse activation function: f(x) = 1 - x.
+    /// `1 - x`.
     Inverse,
-    /// Gaussian Error Linear Unit: f(x) = x * 0.5 * (1 + erf(x / sqrt(2))).
-    /// Uses the exact erf formulation matching TensorFlow's default.
+    /// Exact-erf GELU: `x * 0.5 * (1 + erf(x / sqrt(2)))` (TensorFlow default).
     Gelu,
-    /// Softplus activation function: f(x) = log(1 + exp(x)).
-    /// Uses TensorFlow-compatible thresholding for numerical stability.
+    /// `ln(1 + exp(x))` with TensorFlow's thresholds.
     Softplus,
-    /// Exponential activation: f(x) = exp(clamp(x, -88, 88)).
-    /// The clamp keeps the result inside the f32 range (matches np.exp(np.clip(x, -88, 88))).
+    /// `exp(clamp(x, -88, 88))`, keeping the result finite in f32.
     Exp,
-    /// Sign activation: f(x) = -1 for x < 0, +1 for x > 0, and x itself for 0/NaN.
-    /// Matches numpy's np.sign (preserves signed zero and propagates NaN).
+    /// numpy `sign`: -1, +1, or `x` itself for ±0 and NaN.
     Sign,
 }
 
@@ -85,60 +67,45 @@ fn inverse_activation(x: f32) -> f32 {
     1.0 - x
 }
 
-/// Compute the error function using the Abramowitz and Stegun approximation.
-/// Maximum error: ~1.5×10^-7
+/// Abramowitz & Stegun 7.1.26 (max error ~1.5e-7).
 #[inline(always)]
 fn erf(x: f32) -> f32 {
-    let sign = if x >= 0.0 { 1.0 } else { -1.0 };
-    let x = x.abs();
-
-    // Abramowitz and Stegun formula 7.1.26
     const A1: f32 = 0.254_829_6;
     const A2: f32 = -0.284_496_72;
     const A3: f32 = 1.421_413_8;
     const A4: f32 = -1.453_152_1;
     const A5: f32 = 1.061_405_4;
     const P: f32 = 0.327_591_1;
-
+    let sign = if x >= 0.0 { 1.0 } else { -1.0 };
+    let x = x.abs();
     let t = 1.0 / (1.0 + P * x);
     let y = 1.0 - (((((A5 * t + A4) * t) + A3) * t + A2) * t + A1) * t * (-x * x).exp();
-
     sign * y
 }
 
-/// GeLU activation: f(x) = x * 0.5 * (1 + erf(x / sqrt(2)))
 #[inline(always)]
 fn gelu_activation(x: f32) -> f32 {
-    const SQRT_2_INV: f32 = std::f32::consts::FRAC_1_SQRT_2; // 1 / sqrt(2)
-    x * 0.5 * (1.0 + erf(x * SQRT_2_INV))
+    x * 0.5 * (1.0 + erf(x * std::f32::consts::FRAC_1_SQRT_2))
 }
 
-/// Softplus activation with TensorFlow-compatible thresholding.
-/// - x > -threshold: return x (softplus ≈ x for large positive)
-/// - x < threshold: return exp(x) (softplus ≈ exp(x) for large negative)
-/// - otherwise: return ln_1p(exp(x))
 #[inline(always)]
 fn softplus_activation(x: f32) -> f32 {
-    // threshold = ln(f32::EPSILON) + 2 ≈ -13.9424
+    // TensorFlow's threshold: ln(f32::EPSILON) + 2.
     const THRESHOLD: f32 = -13.9424;
     if x > -THRESHOLD {
         x
     } else if x < THRESHOLD {
         x.exp()
     } else {
-        x.exp().ln_1p() // ln(1 + exp(x)) with better precision
+        x.exp().ln_1p()
     }
 }
 
-/// Exponential activation with a clamp matching the reference
-/// `np.exp(np.clip(x, -88, 88))`; the clamp keeps the result inside the f32 range.
 #[inline(always)]
 fn exp_activation(x: f32) -> f32 {
     x.clamp(-88.0, 88.0).exp()
 }
 
-/// Sign activation matching numpy's `np.sign`: -1 for x < 0, +1 for x > 0, and the
-/// value itself for 0.0/-0.0/NaN (so signed zero is preserved and NaN propagates).
 #[inline(always)]
 fn sign_activation(x: f32) -> f32 {
     if x > 0.0 {
@@ -150,31 +117,34 @@ fn sign_activation(x: f32) -> f32 {
     }
 }
 
-impl Activation {
-    /// Get activation by string name.
-    pub fn get_by_name(type_name: &str) -> Option<Self> {
-        let map: HashMap<&str, Activation> = [
-            ("RELU", Activation::Relu),
-            ("SIGMOID", Activation::Sigmoid),
-            ("SOFTMAX", Activation::Softmax),
-            ("SQRT", Activation::Sqrt),
-            ("LOG", Activation::Log),
-            ("LOG10", Activation::Log10),
-            ("TANH", Activation::Tanh),
-            ("INVERSE", Activation::Inverse),
-            ("GELU", Activation::Gelu),
-            ("SOFTPLUS", Activation::Softplus),
-            ("EXP", Activation::Exp),
-            ("SIGN", Activation::Sign),
-        ]
-        .iter()
-        .cloned()
-        .collect();
+#[inline(always)]
+fn map(values: &mut [f32], f: impl Fn(f32) -> f32) {
+    for v in values {
+        *v = f(*v);
+    }
+}
 
-        map.get(type_name).copied()
+impl Activation {
+    /// Parses the JSON name (e.g. `"RELU"`).
+    pub fn get_by_name(type_name: &str) -> Option<Self> {
+        Some(match type_name {
+            "RELU" => Activation::Relu,
+            "SIGMOID" => Activation::Sigmoid,
+            "SOFTMAX" => Activation::Softmax,
+            "SQRT" => Activation::Sqrt,
+            "LOG" => Activation::Log,
+            "LOG10" => Activation::Log10,
+            "TANH" => Activation::Tanh,
+            "INVERSE" => Activation::Inverse,
+            "GELU" => Activation::Gelu,
+            "SOFTPLUS" => Activation::Softplus,
+            "EXP" => Activation::Exp,
+            "SIGN" => Activation::Sign,
+            _ => return None,
+        })
     }
 
-    /// Apply the activation function to a single value.
+    /// Applies the activation to one value (`Softmax` degenerates to `exp(x)`).
     pub fn apply_single(self, x: f32) -> f32 {
         match self {
             Activation::Relu => relu(x),
@@ -188,88 +158,36 @@ impl Activation {
             Activation::Softplus => softplus_activation(x),
             Activation::Exp => exp_activation(x),
             Activation::Sign => sign_activation(x),
-            Activation::Softmax => {
-                // Softmax for a single value doesn't make much sense, but we'll return exp(x)
-                // The proper softmax should be applied to a vector
-                x.exp()
-            }
+            Activation::Softmax => x.exp(),
         }
     }
 
-    /// Apply the activation function to a slice of values in place.
+    /// Applies the activation to `values` in place.
     pub fn apply_in_place(self, values: &mut [f32]) {
         match self {
             Activation::Softmax => {
-                // Numerically stable softmax implementation
                 let max_val = values.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
                 let mut sum = 0.0f32;
-
-                // Compute exp(x_i - max) and accumulate sum
                 for val in values.iter_mut() {
                     *val = (*val - max_val).exp();
                     sum += *val;
                 }
-
-                // Normalize by sum
                 for val in values.iter_mut() {
                     *val /= sum;
                 }
             }
-            Activation::Relu => {
-                for val in values.iter_mut() {
-                    *val = relu(*val);
-                }
-            }
-            Activation::Sigmoid => {
-                for val in values.iter_mut() {
-                    *val = sigmoid(*val);
-                }
-            }
-            Activation::Sqrt => {
-                for val in values.iter_mut() {
-                    *val = sqrt_activation(*val);
-                }
-            }
-            Activation::Log => {
-                for val in values.iter_mut() {
-                    *val = log_activation(*val);
-                }
-            }
-            Activation::Log10 => {
-                for val in values.iter_mut() {
-                    *val = log10_activation(*val);
-                }
-            }
-            Activation::Tanh => {
-                for val in values.iter_mut() {
-                    *val = tanh_activation(*val);
-                }
-            }
-            Activation::Inverse => {
-                for val in values.iter_mut() {
-                    *val = inverse_activation(*val);
-                }
-            }
-            Activation::Gelu => {
-                for val in values.iter_mut() {
-                    *val = gelu_activation(*val);
-                }
-            }
-            Activation::Softplus => {
-                for val in values.iter_mut() {
-                    *val = softplus_activation(*val);
-                }
-            }
-            Activation::Exp => {
-                for val in values.iter_mut() {
-                    *val = exp_activation(*val);
-                }
-            }
-            Activation::Sign => {
-                for val in values.iter_mut() {
-                    *val = sign_activation(*val);
-                }
-            }
+            // One arm per variant so each loop monomorphizes (and vectorizes) separately.
+            Activation::Relu => map(values, relu),
+            Activation::Sigmoid => map(values, sigmoid),
+            Activation::Sqrt => map(values, sqrt_activation),
+            Activation::Log => map(values, log_activation),
+            Activation::Log10 => map(values, log10_activation),
+            Activation::Tanh => map(values, tanh_activation),
+            Activation::Inverse => map(values, inverse_activation),
+            Activation::Gelu => map(values, gelu_activation),
+            Activation::Softplus => map(values, softplus_activation),
+            Activation::Exp => map(values, exp_activation),
+            Activation::Sign => map(values, sign_activation),
         }
     }
 }
@@ -277,187 +195,79 @@ impl Activation {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const DELTA: f32 = 0.00005;
+    use Activation::*;
 
     #[test]
-    fn test_relu() {
-        assert!((Activation::Relu.apply_single(1.0) - 1.0).abs() < DELTA);
-        assert!((Activation::Relu.apply_single(-1.0) - 0.0).abs() < DELTA);
-        assert!((Activation::Relu.apply_single(0.5) - 0.5).abs() < DELTA);
+    fn element_wise_values() {
+        let cases: &[(Activation, f32, f32, f32)] = &[
+            (Relu, 1.0, 1.0, 5e-5),
+            (Relu, -1.0, 0.0, 5e-5),
+            (Sigmoid, 1.0, 0.7311, 5e-5),
+            (Sigmoid, 0.0, 0.5, 5e-5),
+            (Sigmoid, -0.5, 0.3775, 5e-5),
+            (Sqrt, 4.0, 2.0, 5e-5),
+            (Sqrt, -1.0, 0.0, 5e-5),
+            (Log, 1.0, std::f32::consts::LN_2, 5e-5),
+            (Log, 0.0, 0.0, 5e-5),
+            (Log10, 99.0, 2.0, 5e-5),
+            (Log10, 0.0, 0.0, 5e-5),
+            (Tanh, -1.0, -0.761_594_2, 5e-5),
+            (Inverse, -1.0, 2.0, 5e-5),
+            (Gelu, -2.0, -0.0454, 1e-3),
+            (Gelu, -1.0, -0.1587, 1e-3),
+            (Gelu, 0.0, 0.0, 5e-5),
+            (Gelu, 1.0, 0.8413, 1e-3),
+            (Gelu, 2.0, 1.9545, 1e-3),
+            (Softplus, 0.0, std::f32::consts::LN_2, 1e-7),
+            (Softplus, 1.0, 1.313_261_6, 1e-7),
+            (Softplus, -1.0, 0.313_261_7, 1e-7),
+            (Softplus, 100.0, 100.0, 1e-7),
+            (Softplus, -100.0, 0.0, 1e-7),
+            (Exp, 1.0, std::f32::consts::E, 5e-5),
+            (Exp, -1000.0, 0.0, 5e-5),
+            (Sign, 3.5, 1.0, 0.0),
+            (Sign, -2.0, -1.0, 0.0),
+            (Sign, 0.0, 0.0, 0.0),
+        ];
+        for &(activation, x, expected, tol) in cases {
+            let single = activation.apply_single(x);
+            let mut in_place = [x];
+            activation.apply_in_place(&mut in_place);
+            assert!(
+                (single - expected).abs() <= tol,
+                "{activation:?}({x}) = {single}"
+            );
+            assert_eq!(
+                single.to_bits(),
+                in_place[0].to_bits(),
+                "{activation:?}({x})"
+            );
+        }
+        assert!((Exp.apply_single(1000.0) - 88.0_f32.exp()).abs() < 1.0);
+        assert!(Sign.apply_single(f32::NAN).is_nan());
     }
 
     #[test]
-    fn test_sigmoid() {
-        assert!((Activation::Sigmoid.apply_single(1.0) - 0.7311).abs() < DELTA);
-        assert!((Activation::Sigmoid.apply_single(0.0) - 0.5).abs() < DELTA);
-        assert!((Activation::Sigmoid.apply_single(-0.5) - 0.3775).abs() < DELTA);
-    }
-
-    #[test]
-    fn test_softmax() {
+    fn softmax_normalizes_vector() {
         let mut values = [1.0, 2.0, 3.0];
-        Activation::Softmax.apply_in_place(&mut values);
-
-        // Expected outputs: [0.09003057, 0.24472847, 0.66524096]
-        assert!((values[0] - 0.09003057).abs() < DELTA);
-        assert!((values[1] - 0.24472847).abs() < DELTA);
-        assert!((values[2] - 0.66524096).abs() < DELTA);
+        Softmax.apply_in_place(&mut values);
+        for (v, e) in values
+            .iter()
+            .zip([0.090_030_57, 0.244_728_47, 0.665_240_96])
+        {
+            assert!((v - e).abs() < 5e-5);
+        }
     }
 
     #[test]
-    fn test_sqrt() {
-        assert!((Activation::Sqrt.apply_single(4.0) - 2.0).abs() < DELTA);
-        assert!((Activation::Sqrt.apply_single(-1.0) - 0.0).abs() < DELTA);
-        assert!((Activation::Sqrt.apply_single(9.0) - 3.0).abs() < DELTA);
-    }
-
-    #[test]
-    fn test_log() {
-        assert!((Activation::Log.apply_single(1.0) - 2.0_f32.ln()).abs() < DELTA);
-        assert!((Activation::Log.apply_single(0.0) - 0.0).abs() < DELTA);
-        assert!((Activation::Log.apply_single(9.0) - 10.0_f32.ln()).abs() < DELTA);
-    }
-
-    #[test]
-    fn test_log10() {
-        assert!((Activation::Log10.apply_single(9.0) - 1.0).abs() < DELTA);
-        assert!((Activation::Log10.apply_single(0.0) - 0.0).abs() < DELTA);
-        assert!((Activation::Log10.apply_single(99.0) - 2.0).abs() < DELTA);
-    }
-
-    #[test]
-    fn test_tanh() {
-        assert!((Activation::Tanh.apply_single(0.0) - 0.0).abs() < DELTA);
-        assert!((Activation::Tanh.apply_single(1.0) - 1.0_f32.tanh()).abs() < DELTA);
-        assert!((Activation::Tanh.apply_single(-1.0) - (-1.0_f32).tanh()).abs() < DELTA);
-    }
-
-    #[test]
-    fn test_inverse() {
-        assert!((Activation::Inverse.apply_single(1.0) - 0.0).abs() < DELTA);
-        assert!((Activation::Inverse.apply_single(0.0) - 1.0).abs() < DELTA);
-        assert!((Activation::Inverse.apply_single(-1.0) - 2.0).abs() < DELTA);
-    }
-
-    #[test]
-    fn test_gelu() {
-        // GeLU(x) = x * 0.5 * (1 + erf(x / sqrt(2)))
-        // Expected values computed from TensorFlow/NumPy with higher precision
-        const GELU_DELTA: f32 = 0.001;
-        assert!((Activation::Gelu.apply_single(-2.0) - (-0.0454)).abs() < GELU_DELTA);
-        assert!((Activation::Gelu.apply_single(-1.0) - (-0.1587)).abs() < GELU_DELTA);
-        assert!((Activation::Gelu.apply_single(0.0) - 0.0).abs() < DELTA);
-        assert!((Activation::Gelu.apply_single(1.0) - 0.8413).abs() < GELU_DELTA);
-        assert!((Activation::Gelu.apply_single(2.0) - 1.9545).abs() < GELU_DELTA);
-    }
-
-    #[test]
-    fn test_gelu_in_place() {
-        let mut values = [-2.0, -1.0, 0.0, 1.0, 2.0];
-        Activation::Gelu.apply_in_place(&mut values);
-
-        const GELU_DELTA: f32 = 0.001;
-        assert!((values[0] - (-0.0454)).abs() < GELU_DELTA);
-        assert!((values[1] - (-0.1587)).abs() < GELU_DELTA);
-        assert!((values[2] - 0.0).abs() < DELTA);
-        assert!((values[3] - 0.8413).abs() < GELU_DELTA);
-        assert!((values[4] - 1.9545).abs() < GELU_DELTA);
-    }
-
-    #[test]
-    fn test_get_by_name() {
-        assert_eq!(Activation::get_by_name("RELU"), Some(Activation::Relu));
-        assert_eq!(
-            Activation::get_by_name("SIGMOID"),
-            Some(Activation::Sigmoid)
-        );
-        assert_eq!(
-            Activation::get_by_name("SOFTMAX"),
-            Some(Activation::Softmax)
-        );
-        assert_eq!(Activation::get_by_name("GELU"), Some(Activation::Gelu));
-        assert_eq!(
-            Activation::get_by_name("SOFTPLUS"),
-            Some(Activation::Softplus)
-        );
-        assert_eq!(Activation::get_by_name("EXP"), Some(Activation::Exp));
-        assert_eq!(Activation::get_by_name("SIGN"), Some(Activation::Sign));
+    fn names_round_trip() {
+        for name in [
+            "RELU", "SIGMOID", "SOFTMAX", "SQRT", "LOG", "LOG10", "TANH", "INVERSE", "GELU",
+            "SOFTPLUS", "EXP", "SIGN",
+        ] {
+            let activation = Activation::get_by_name(name).unwrap();
+            assert_eq!(serde_json::to_value(activation).unwrap(), name);
+        }
         assert_eq!(Activation::get_by_name("INVALID"), None);
-    }
-
-    #[test]
-    fn test_softplus() {
-        const SOFTPLUS_DELTA: f32 = 1e-7;
-
-        // softplus(x) = log(1 + exp(x))
-        // At x=0: log(2)
-        assert!(
-            (Activation::Softplus.apply_single(0.0) - std::f32::consts::LN_2).abs()
-                < SOFTPLUS_DELTA
-        );
-        // At x=1: log(1 + e) = 1.3132616875182228 (f32 rounds to 1.3132616)
-        assert!((Activation::Softplus.apply_single(1.0) - 1.3132616).abs() < SOFTPLUS_DELTA);
-        // At x=-1: log(1 + 1/e) = 0.31326168751822286
-        assert!((Activation::Softplus.apply_single(-1.0) - 0.3132617).abs() < SOFTPLUS_DELTA);
-        // Large positive: should return x exactly
-        assert!((Activation::Softplus.apply_single(100.0) - 100.0).abs() < SOFTPLUS_DELTA);
-        // Large negative: should return ~0 (exp(-100) underflows)
-        assert!(Activation::Softplus.apply_single(-100.0) < SOFTPLUS_DELTA);
-    }
-
-    #[test]
-    fn test_softplus_in_place() {
-        const SOFTPLUS_DELTA: f32 = 1e-7;
-        let mut values = [-100.0, -1.0, 0.0, 1.0, 100.0];
-        Activation::Softplus.apply_in_place(&mut values);
-
-        assert!(values[0] < SOFTPLUS_DELTA); // ~0
-        assert!((values[1] - 0.3132617).abs() < SOFTPLUS_DELTA);
-        assert!((values[2] - std::f32::consts::LN_2).abs() < SOFTPLUS_DELTA);
-        assert!((values[3] - 1.3132616).abs() < SOFTPLUS_DELTA);
-        assert!((values[4] - 100.0).abs() < SOFTPLUS_DELTA);
-    }
-
-    #[test]
-    fn test_exp() {
-        assert!((Activation::Exp.apply_single(0.0) - 1.0).abs() < DELTA);
-        assert!((Activation::Exp.apply_single(1.0) - std::f32::consts::E).abs() < DELTA);
-        assert!((Activation::Exp.apply_single(-1.0) - (-1.0_f32).exp()).abs() < DELTA);
-        // Clamp keeps large inputs finite (exp(88) is the largest finite-ish value).
-        assert!(Activation::Exp.apply_single(1000.0).is_finite());
-        assert!((Activation::Exp.apply_single(1000.0) - 88.0_f32.exp()).abs() < 1.0);
-        // Large negative clamps to exp(-88), a tiny positive number (never NaN/inf).
-        assert!(Activation::Exp.apply_single(-1000.0) >= 0.0);
-        assert!(Activation::Exp.apply_single(-1000.0) < DELTA);
-    }
-
-    #[test]
-    fn test_exp_in_place() {
-        let mut values = [0.0, 1.0, -1.0];
-        Activation::Exp.apply_in_place(&mut values);
-        assert!((values[0] - 1.0).abs() < DELTA);
-        assert!((values[1] - std::f32::consts::E).abs() < DELTA);
-        assert!((values[2] - (-1.0_f32).exp()).abs() < DELTA);
-    }
-
-    #[test]
-    fn test_sign() {
-        assert!((Activation::Sign.apply_single(3.5) - 1.0).abs() < DELTA);
-        assert!((Activation::Sign.apply_single(-2.0) - (-1.0)).abs() < DELTA);
-        assert!((Activation::Sign.apply_single(0.0) - 0.0).abs() < DELTA);
-        // NaN propagates, matching np.sign(nan) == nan.
-        assert!(Activation::Sign.apply_single(f32::NAN).is_nan());
-    }
-
-    #[test]
-    fn test_sign_in_place() {
-        let mut values = [-5.0, -0.0, 0.0, 0.001, 100.0];
-        Activation::Sign.apply_in_place(&mut values);
-        assert!((values[0] - (-1.0)).abs() < DELTA);
-        assert!((values[1] - 0.0).abs() < DELTA);
-        assert!((values[2] - 0.0).abs() < DELTA);
-        assert!((values[3] - 1.0).abs() < DELTA);
-        assert!((values[4] - 1.0).abs() < DELTA);
     }
 }

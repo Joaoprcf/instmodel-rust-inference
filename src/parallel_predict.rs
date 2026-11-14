@@ -1,28 +1,23 @@
+//! Multi-threaded batch prediction.
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 use crate::errors::{ParallelPredictError, ParallelPredictResult};
 use crate::instruction_model::InstructionModel;
 
+/// Output pointer shared by worker threads; each sample index is claimed by exactly
+/// one thread, so writes never overlap.
 #[derive(Clone, Copy)]
-struct SendPtr {
-    ptr: *mut f32,
-}
+struct SendPtr(*mut f32);
 
 impl SendPtr {
-    fn new(ptr: *mut f32) -> Self {
-        Self { ptr }
-    }
-
-    unsafe fn add(self, offset: usize) -> *mut f32 {
-        unsafe { self.ptr.add(offset) }
-    }
-
-    unsafe fn as_slice_mut(self, offset: usize, len: usize) -> &'static mut [f32] {
-        unsafe { std::slice::from_raw_parts_mut(self.ptr.add(offset), len) }
+    fn get(self) -> *mut f32 {
+        self.0
     }
 }
 
+// SAFETY: see the type docs — threads write disjoint ranges of a buffer that outlives them.
 unsafe impl Send for SendPtr {}
 unsafe impl Sync for SendPtr {}
 
@@ -175,63 +170,50 @@ pub fn execute_parallel_predict(
 
     let slice_size = slice_end - slice_start;
     let mut output_buffer = vec![0.0f32; num_samples * slice_size];
-    let mut computation_buffers = vec![0.0f32; num_threads * required_memory];
-
+    let mut computation_buffers = vec![0.0f32; num_threads.min(num_samples) * required_memory];
     let sample_counter = AtomicUsize::new(0);
+    let output_ptr = SendPtr(output_buffer.as_mut_ptr());
 
     thread::scope(|scope| {
-        let sample_counter_ref = &sample_counter;
-        let output_buffer_ptr = SendPtr::new(output_buffer.as_mut_ptr());
-        let computation_buffers_ptr = SendPtr::new(computation_buffers.as_mut_ptr());
-
-        let handles: Vec<_> = (0..num_threads)
-            .map(|thread_id| {
+        let handles: Vec<_> = computation_buffers
+            .chunks_mut(required_memory)
+            .map(|thread_buffer| {
+                let sample_counter = &sample_counter;
                 scope.spawn(move || -> ParallelPredictResult<()> {
-                    let thread_buffer_start = thread_id * required_memory;
-                    let thread_buffer = unsafe {
-                        computation_buffers_ptr.as_slice_mut(thread_buffer_start, required_memory)
-                    };
-
                     loop {
-                        let sample_index = sample_counter_ref.fetch_add(1, Ordering::Relaxed);
+                        let sample_index = sample_counter.fetch_add(1, Ordering::Relaxed);
                         if sample_index >= num_samples {
-                            break;
+                            return Ok(());
                         }
-
                         let input_start = sample_index * feature_size;
-                        let input_end = input_start + feature_size;
                         thread_buffer[..feature_size]
-                            .copy_from_slice(&inputs[input_start..input_end]);
-
+                            .copy_from_slice(&inputs[input_start..input_start + feature_size]);
                         model.predict_with_buffer(thread_buffer).map_err(|e| {
                             ParallelPredictError::PredictionFailed {
                                 sample_index,
                                 message: e.to_string(),
                             }
                         })?;
-
-                        let output_start = sample_index * slice_size;
+                        let result = &thread_buffer[slice_start..slice_end];
+                        // SAFETY: `sample_index < num_samples` was claimed by this thread only,
+                        // so this `slice_size` range of `output_buffer` is in bounds and unaliased.
                         unsafe {
                             std::ptr::copy_nonoverlapping(
-                                thread_buffer.as_ptr().add(slice_start),
-                                output_buffer_ptr.add(output_start),
+                                result.as_ptr(),
+                                output_ptr.get().add(sample_index * slice_size),
                                 slice_size,
                             );
                         }
                     }
-
-                    Ok(())
                 })
             })
             .collect();
 
         for handle in handles {
-            match handle.join() {
-                Ok(result) => result?,
-                Err(_) => return Err(ParallelPredictError::ThreadPanicked),
-            }
+            handle
+                .join()
+                .map_err(|_| ParallelPredictError::ThreadPanicked)??;
         }
-
         Ok(())
     })?;
 

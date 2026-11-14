@@ -1,14 +1,9 @@
-//! Element-wise clip (clamp) instruction implementation.
+//! CLIP_ELEMENTWISE.
 
 use crate::errors::InstructionModelError;
 use crate::instructions::Instruction;
 
-/// Represents an instruction that clamps buffer values element-wise to optional
-/// lower/upper bounds supplied as parameter vectors.
-///
-/// Applies `max(x, min[i])` when a lower bound is present and `min(x, max[i])`
-/// when an upper bound is present, in that order, matching the reference
-/// `CLIP_ELEMENTWISE` (`np.maximum` then `np.minimum`).
+/// In-place `min(max(x, lower), upper)` with optional per-element bounds.
 #[derive(Clone)]
 pub struct ClipElementwiseInstruction {
     output_ptr: usize,
@@ -34,43 +29,16 @@ impl ClipElementwiseInstruction {
 }
 
 impl Instruction for ClipElementwiseInstruction {
-    fn output_ptr(&self) -> usize {
-        self.output_ptr
-    }
+    super::instruction_common!();
 
-    fn data_size(&self) -> usize {
-        self.data_size
-    }
-
-    fn apply(&self, unified_computation_buffer: &mut [f32]) -> Result<(), InstructionModelError> {
-        debug_assert!(
-            self.parameters_min
-                .as_ref()
-                .is_none_or(|p| p.len() == self.data_size)
-        );
-        debug_assert!(
-            self.parameters_max
-                .as_ref()
-                .is_none_or(|p| p.len() == self.data_size)
-        );
-
-        let output_start = self.output_ptr;
-
-        for i in 0..self.data_size {
-            let mut value = unified_computation_buffer[output_start + i];
-            if let Some(min) = &self.parameters_min {
-                value = value.max(min[i]);
-            }
-            if let Some(max) = &self.parameters_max {
-                value = value.min(max[i]);
-            }
-            unified_computation_buffer[output_start + i] = value;
+    fn apply(&self, buffer: &mut [f32]) -> Result<(), InstructionModelError> {
+        let values = &mut buffer[self.output_ptr..self.output_ptr + self.data_size];
+        if let Some(min) = &self.parameters_min {
+            values.iter_mut().zip(min).for_each(|(v, &m)| *v = v.max(m));
         }
-
+        if let Some(max) = &self.parameters_max {
+            values.iter_mut().zip(max).for_each(|(v, &m)| *v = v.min(m));
+        }
         Ok(())
-    }
-
-    fn clone_box(&self) -> Option<Box<dyn Instruction>> {
-        Some(Box::new(self.clone()))
     }
 }

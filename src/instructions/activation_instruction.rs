@@ -1,10 +1,10 @@
-//! Activation instruction implementation.
+//! ACTIVATION.
 
 use crate::activation::Activation;
 use crate::errors::InstructionModelError;
 use crate::instructions::Instruction;
 
-/// Represents an instruction that applies an activation function to values in place.
+/// Applies an activation in place over one buffer.
 #[derive(Clone)]
 pub struct ActivationInstruction {
     activation: Activation,
@@ -23,23 +23,11 @@ impl ActivationInstruction {
 }
 
 impl Instruction for ActivationInstruction {
-    fn output_ptr(&self) -> usize {
-        self.output_ptr
-    }
+    super::instruction_common!();
 
-    fn data_size(&self) -> usize {
-        self.data_size
-    }
-
-    fn apply(&self, unified_computation_buffer: &mut [f32]) -> Result<(), InstructionModelError> {
-        let start = self.output_ptr;
-        let end = start + self.data_size;
-        let slice = &mut unified_computation_buffer[start..end];
-        self.activation.apply_in_place(slice);
+    fn apply(&self, buffer: &mut [f32]) -> Result<(), InstructionModelError> {
+        self.activation
+            .apply_in_place(&mut buffer[self.output_ptr..self.output_ptr + self.data_size]);
         Ok(())
-    }
-
-    fn clone_box(&self) -> Option<Box<dyn Instruction>> {
-        Some(Box::new(self.clone()))
     }
 }

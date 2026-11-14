@@ -1,9 +1,9 @@
-//! Copy instruction implementation.
+//! COPY.
 
 use crate::errors::InstructionModelError;
 use crate::instructions::Instruction;
 
-/// Represents an instruction that copies data from one buffer location to another.
+/// Copies `data_size` values from `input_ptr` to `output_ptr`.
 #[derive(Clone)]
 pub struct CopyInstruction {
     input_ptr: usize,
@@ -22,23 +22,13 @@ impl CopyInstruction {
 }
 
 impl Instruction for CopyInstruction {
-    fn output_ptr(&self) -> usize {
-        self.output_ptr
-    }
+    super::instruction_common!();
 
-    fn data_size(&self) -> usize {
-        self.data_size
-    }
-
-    fn apply(&self, unified_computation_buffer: &mut [f32]) -> Result<(), InstructionModelError> {
-        for i in 0..self.data_size {
-            unified_computation_buffer[self.output_ptr + i] =
-                unified_computation_buffer[self.input_ptr + i];
-        }
+    fn apply(&self, buffer: &mut [f32]) -> Result<(), InstructionModelError> {
+        buffer.copy_within(
+            self.input_ptr..self.input_ptr + self.data_size,
+            self.output_ptr,
+        );
         Ok(())
-    }
-
-    fn clone_box(&self) -> Option<Box<dyn Instruction>> {
-        Some(Box::new(self.clone()))
     }
 }
