@@ -517,7 +517,8 @@ mod tests {
     #[test]
     fn rejects_malformed_models() {
         use GpuModelError as E;
-        let cases: Vec<(InstructionModelInfo, fn(&E) -> bool)> = vec![
+        type Case = (InstructionModelInfo, fn(&E) -> bool);
+        let cases: Vec<Case> = vec![
             (
                 weightless(
                     json!([3, 3]),

@@ -472,6 +472,8 @@ mod tests {
         ));
     }
 
+    type Case = (Value, fn(&InstructionModelError) -> bool);
+
     fn model(extra: Value) -> InstructionModelResult<InstructionModel> {
         let mut v =
             json!({"feature_size": 4, "buffer_sizes": [4, 2, 4], "weights": [], "bias": []});
@@ -486,7 +488,7 @@ mod tests {
         use InstructionModelError as E;
         let copy = json!([{"type": "COPY", "input": 0, "output": 2, "internal_index": 0}]);
         let dot = json!([{"type": "DOT", "input": 0, "output": 1, "weights": 0}]);
-        let cases: Vec<(Value, fn(&E) -> bool)> = vec![
+        let cases: Vec<Case> = vec![
             (json!({"buffer_sizes": [], "instructions": copy}), |e| {
                 matches!(e, E::NoLayersProvided)
             }),
@@ -524,7 +526,7 @@ mod tests {
     #[test]
     fn instruction_reference_errors() {
         use InstructionModelError as E;
-        let cases: Vec<(Value, fn(&E) -> bool)> = vec![
+        let cases: Vec<Case> = vec![
             (
                 json!({"type": "COPY", "input": 1, "output": 2, "internal_index": 3}),
                 |e| {

@@ -373,7 +373,8 @@ mod tests {
     #[test]
     fn small_instructions_compute_expected_buffers() {
         let map = HashMap::from([("2".to_string(), vec![7.0, 8.0])]);
-        let cases: Vec<(Box<dyn Instruction>, Vec<f32>, Vec<f32>)> = vec![
+        type Case = (Box<dyn Instruction>, Vec<f32>, Vec<f32>);
+        let cases: Vec<Case> = vec![
             (
                 Box::new(CopyInstruction::new(0, 3, 2)),
                 vec![1.0, 2.0, 0.0, 0.0, 0.0],

@@ -60,7 +60,9 @@ fn make_dataset() -> (Vec<f32>, Vec<f32>) {
     let mut inputs = vec![0.0f32; ROWS * FEATURE_SIZE];
     stream.fill_gaussian_f32(&mut inputs);
     let targets = inputs
-        .chunks_exact(FEATURE_SIZE)
+        .as_chunks::<FEATURE_SIZE>()
+        .0
+        .iter()
         .map(|row| {
             let dot: f32 = row.iter().zip(w_true.iter()).map(|(x, w)| x * w).sum();
             dot.tanh()
@@ -75,7 +77,12 @@ fn dataset_mse(
     targets: &[f32],
 ) -> Result<f64, InstructionModelError> {
     let mut squared_error = 0.0f64;
-    for (row, target) in inputs.chunks_exact(FEATURE_SIZE).zip(targets.iter()) {
+    for (row, target) in inputs
+        .as_chunks::<FEATURE_SIZE>()
+        .0
+        .iter()
+        .zip(targets.iter())
+    {
         let prediction = model.predict(row)?[0];
         squared_error += f64::from(prediction - target).powi(2);
     }
@@ -147,7 +154,7 @@ fn run() -> Result<(), ExampleError> {
     let json = serde_json::to_string(&compiled)?;
     let reloaded: InstructionModelInfo = serde_json::from_str(&json)?;
     let reloaded_model = InstructionModel::new(reloaded)?;
-    for row in inputs.chunks_exact(FEATURE_SIZE) {
+    for row in inputs.as_chunks::<FEATURE_SIZE>().0.iter() {
         let live = model.predict(row)?;
         let restored = reloaded_model.predict(row)?;
         assert_eq!(live, restored, "serde round-trip changed predictions");
