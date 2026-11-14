@@ -1,10 +1,10 @@
-//! Instruction implementations for neural network operations.
-//!
-//! This module contains all the instruction types that can be executed
-//! by the neural inference engine. Each instruction operates on computation
-//! buffers to perform specific neural network operations.
+//! Executable instructions operating on a unified computation buffer.
+
+use std::collections::HashMap;
 
 use crate::errors::InstructionModelError;
+use crate::instruction_model_info::InstructionInfo;
+use crate::instruction_model_validation::validate_instruction;
 
 pub mod activation_instruction;
 pub mod add_buffer_heads_instruction;
@@ -86,262 +86,136 @@ pub trait Instruction: Send + Sync {
     }
 }
 
-/// Creates an instruction from instruction info and model context.
+/// Validates `instruction_info` against the model context and builds the executable instruction.
 pub fn create_instruction(
-    instruction_info: &crate::instruction_model_info::InstructionInfo,
+    instruction_info: &InstructionInfo,
     computation_buffer_indexes: &[usize],
     computation_buffer_sizes: &[usize],
     weights: &[Vec<Vec<f32>>],
     bias: &[Vec<f32>],
     parameters: &[Vec<f32>],
-    maps: &[std::collections::HashMap<String, Vec<f32>>],
+    maps: &[HashMap<String, Vec<f32>>],
 ) -> Result<Box<dyn Instruction>, InstructionModelError> {
-    use crate::instruction_model_info::InstructionInfo;
+    validate_instruction(
+        instruction_info,
+        computation_buffer_sizes,
+        weights,
+        bias,
+        parameters,
+        maps,
+    )?;
+    let ptr = |buffer: usize| computation_buffer_indexes[buffer];
+    let size = |buffer: usize| computation_buffer_sizes[buffer];
 
-    match instruction_info {
-        InstructionInfo::Dot(info) => {
-            if info.input == info.output {
-                return Err(InstructionModelError::SameInputOutputIndexes {
-                    instruction_type: "DOT".to_string(),
-                });
-            }
-            if info.weights >= weights.len() {
-                return Err(InstructionModelError::WeightsIndexOutOfBounds {
-                    index: info.weights,
-                });
-            }
-
-            let weights_matrix = &weights[info.weights];
-            let bias_vector =
-                bias.get(info.weights)
-                    .ok_or(InstructionModelError::WeightsIndexOutOfBounds {
-                        index: info.weights,
-                    })?;
-
-            let input_size = computation_buffer_sizes[info.input];
-            let output_size = computation_buffer_sizes[info.output];
-
-            if weights_matrix.len() != output_size {
-                return Err(InstructionModelError::WeightsRowSizeMismatch {
-                    weights_rows: weights_matrix.len(),
-                    output_size,
-                });
-            }
-            if bias_vector.len() != output_size {
-                return Err(InstructionModelError::BiasOutputSizeMismatch {
-                    bias_index: info.weights,
-                    output_index: info.output,
-                    bias_size: bias_vector.len(),
-                    output_size,
-                });
-            }
-            for row in weights_matrix {
-                if row.len() != input_size {
-                    return Err(InstructionModelError::WeightsColumnSizeMismatch {
-                        input_index: info.input,
-                        weights_columns: row.len(),
-                        input_size,
-                    });
-                }
-            }
-
-            let instruction = DotInstruction::new(
-                computation_buffer_indexes[info.input],
-                computation_buffer_indexes[info.output],
-                computation_buffer_sizes[info.output],
-                weights_matrix,
-                bias_vector,
-                info.activation,
-            )?;
-            Ok(Box::new(instruction))
-        }
-        InstructionInfo::Copy(info) => {
-            let instruction = CopyInstruction::new(
-                computation_buffer_indexes[info.input],
-                computation_buffer_indexes[info.output] + info.internal_index,
-                computation_buffer_sizes[info.input],
-            );
-            Ok(Box::new(instruction))
-        }
-        InstructionInfo::CopyMasked(info) => {
-            let instruction = CopyMaskedInstruction::new(
-                computation_buffer_indexes[info.input],
-                computation_buffer_indexes[info.output],
-                &info.indexes,
-            );
-            Ok(Box::new(instruction))
-        }
-        InstructionInfo::Activation(info) => {
-            let instruction = ActivationInstruction::new(
-                info.activation,
-                computation_buffer_indexes[info.input],
-                computation_buffer_sizes[info.input],
-            );
-            Ok(Box::new(instruction))
-        }
-        InstructionInfo::ElemWiseAdd(info) => {
-            let instruction = ElemWiseAddInstruction::new(
-                computation_buffer_indexes[info.input],
-                computation_buffer_sizes[info.input],
-                &parameters[info.parameters],
-            );
-            Ok(Box::new(instruction))
-        }
-        InstructionInfo::ElemWiseMul(info) => {
-            let instruction = ElemWiseMulInstruction::new(
-                computation_buffer_indexes[info.input],
-                computation_buffer_sizes[info.input],
-                &parameters[info.parameters],
-            );
-            Ok(Box::new(instruction))
-        }
-        InstructionInfo::ClipElementwise(info) => {
-            let parameters_min = info.parameters_min.map(|idx| parameters[idx].clone());
-            let parameters_max = info.parameters_max.map(|idx| parameters[idx].clone());
-            let instruction = ClipElementwiseInstruction::new(
-                computation_buffer_indexes[info.input],
-                computation_buffer_sizes[info.input],
-                parameters_min,
-                parameters_max,
-            );
-            Ok(Box::new(instruction))
-        }
-        InstructionInfo::MapTransform(info) => {
-            let instruction = MapTransformInstruction::new(
-                computation_buffer_indexes[info.input] + info.internal_input_index,
-                computation_buffer_indexes[info.output] + info.internal_output_index,
-                info.size,
-                &maps[info.map],
-                &info.default_value,
-            );
-            Ok(Box::new(instruction))
-        }
-        InstructionInfo::ElemWiseBuffersAdd(info) => {
-            let input_ptrs: Vec<usize> = info
-                .input
-                .iter()
-                .map(|&idx| computation_buffer_indexes[idx])
-                .collect();
-            let instruction = ElemWiseBuffersAddInstruction::new(
-                input_ptrs,
-                computation_buffer_indexes[info.output],
-                computation_buffer_sizes[info.output],
-            );
-            Ok(Box::new(instruction))
-        }
-        InstructionInfo::ElemWiseBuffersMul(info) => {
-            let input_ptrs: Vec<usize> = info
-                .input
-                .iter()
-                .map(|&idx| computation_buffer_indexes[idx])
-                .collect();
-            let instruction = ElemWiseBuffersMulInstruction::new(
-                input_ptrs,
-                computation_buffer_indexes[info.output],
-                computation_buffer_sizes[info.output],
-            );
-            Ok(Box::new(instruction))
-        }
-        InstructionInfo::ReduceSum(info) => {
-            let instruction = ReduceSumInstruction::new(
-                computation_buffer_indexes[info.input],
-                computation_buffer_indexes[info.output],
-                computation_buffer_sizes[info.input],
-            );
-            Ok(Box::new(instruction))
-        }
-        InstructionInfo::Attention(info) => {
-            if info.weights >= weights.len() {
-                return Err(InstructionModelError::WeightsIndexOutOfBounds {
-                    index: info.weights,
-                });
-            }
-
-            let weights_matrix = &weights[info.weights];
-            let bias_vector =
-                bias.get(info.weights)
-                    .ok_or(InstructionModelError::WeightsIndexOutOfBounds {
-                        index: info.weights,
-                    })?;
-
-            let query_size = computation_buffer_sizes[info.input];
-            let key_size = computation_buffer_sizes[info.key];
-            let output_size = computation_buffer_sizes[info.output];
-
-            if query_size != output_size {
-                return Err(InstructionModelError::InputBufferSizeMismatch {
-                    index: info.input,
-                    actual_size: query_size,
-                    expected_size: output_size,
-                });
-            }
-            if weights_matrix.len() != output_size {
-                return Err(InstructionModelError::WeightsRowSizeMismatch {
-                    weights_rows: weights_matrix.len(),
-                    output_size,
-                });
-            }
-            if bias_vector.len() != output_size {
-                return Err(InstructionModelError::BiasOutputSizeMismatch {
-                    bias_index: info.weights,
-                    output_index: info.output,
-                    bias_size: bias_vector.len(),
-                    output_size,
-                });
-            }
-            for row in weights_matrix {
-                if row.len() != key_size {
-                    return Err(InstructionModelError::WeightsColumnSizeMismatch {
-                        input_index: info.key,
-                        weights_columns: row.len(),
-                        input_size: key_size,
-                    });
-                }
-            }
-
-            let instruction = AttentionInstruction::new(
-                computation_buffer_indexes[info.input],
-                computation_buffer_indexes[info.key],
-                computation_buffer_indexes[info.output],
-                computation_buffer_sizes[info.output],
-                weights_matrix,
-                bias_vector,
-            );
-            Ok(Box::new(instruction))
-        }
+    Ok(match instruction_info {
+        InstructionInfo::Dot(info) => Box::new(DotInstruction::new(
+            ptr(info.input),
+            ptr(info.output),
+            size(info.output),
+            &weights[info.weights],
+            &bias[info.weights],
+            info.activation,
+        )?),
+        InstructionInfo::Copy(info) => Box::new(CopyInstruction::new(
+            ptr(info.input),
+            ptr(info.output) + info.internal_index,
+            size(info.input),
+        )),
+        InstructionInfo::CopyMasked(info) => Box::new(CopyMaskedInstruction::new(
+            ptr(info.input),
+            ptr(info.output),
+            &info.indexes,
+        )),
+        InstructionInfo::Activation(info) => Box::new(ActivationInstruction::new(
+            info.activation,
+            ptr(info.input),
+            size(info.input),
+        )),
+        InstructionInfo::ElemWiseAdd(info) => Box::new(ElemWiseAddInstruction::new(
+            ptr(info.input),
+            size(info.input),
+            &parameters[info.parameters],
+        )),
+        InstructionInfo::ElemWiseMul(info) => Box::new(ElemWiseMulInstruction::new(
+            ptr(info.input),
+            size(info.input),
+            &parameters[info.parameters],
+        )),
+        InstructionInfo::ClipElementwise(info) => Box::new(ClipElementwiseInstruction::new(
+            ptr(info.input),
+            size(info.input),
+            info.parameters_min.map(|idx| parameters[idx].clone()),
+            info.parameters_max.map(|idx| parameters[idx].clone()),
+        )),
+        InstructionInfo::MapTransform(info) => Box::new(MapTransformInstruction::new(
+            ptr(info.input) + info.internal_input_index,
+            ptr(info.output) + info.internal_output_index,
+            info.size,
+            &maps[info.map],
+            &info.default_value,
+        )),
+        InstructionInfo::ElemWiseBuffersAdd(info) => Box::new(ElemWiseBuffersAddInstruction::new(
+            info.input.iter().map(|&idx| ptr(idx)).collect(),
+            ptr(info.output),
+            size(info.output),
+        )),
+        InstructionInfo::ElemWiseBuffersMul(info) => Box::new(ElemWiseBuffersMulInstruction::new(
+            info.input.iter().map(|&idx| ptr(idx)).collect(),
+            ptr(info.output),
+            size(info.output),
+        )),
+        InstructionInfo::ReduceSum(info) => Box::new(ReduceSumInstruction::new(
+            ptr(info.input),
+            ptr(info.output),
+            size(info.input),
+        )),
+        InstructionInfo::Attention(info) => Box::new(AttentionInstruction::new(
+            ptr(info.input),
+            ptr(info.key),
+            ptr(info.output),
+            size(info.output),
+            &weights[info.weights],
+            &bias[info.weights],
+        )),
         InstructionInfo::MultiplyBufferHeads(info) => {
-            if info.input.len() != 2 {
-                return Err(InstructionModelError::InsufficientInputBuffers);
-            }
-            let data_idx = info.input[0];
-            let heads_idx = info.input[1];
-            let data_ptr = computation_buffer_indexes[data_idx];
-            let heads_ptr = computation_buffer_indexes[heads_idx];
-            let output_ptr = computation_buffer_indexes[info.output];
-            let data_size = computation_buffer_sizes[data_idx];
-            let heads_size = computation_buffer_sizes[heads_idx];
-
-            let instruction = MultiplyBufferHeadsInstruction::new(
-                data_ptr, heads_ptr, output_ptr, data_size, heads_size,
-            )?;
-            Ok(Box::new(instruction))
+            let (data, heads) = (info.input[0], info.input[1]);
+            Box::new(MultiplyBufferHeadsInstruction::new(
+                ptr(data),
+                ptr(heads),
+                ptr(info.output),
+                size(data),
+                size(heads),
+            )?)
         }
         InstructionInfo::AddBufferHeads(info) => {
-            if info.input.len() != 2 {
-                return Err(InstructionModelError::InsufficientInputBuffers);
-            }
-            let data_idx = info.input[0];
-            let heads_idx = info.input[1];
-            let data_ptr = computation_buffer_indexes[data_idx];
-            let heads_ptr = computation_buffer_indexes[heads_idx];
-            let output_ptr = computation_buffer_indexes[info.output];
-            let data_size = computation_buffer_sizes[data_idx];
-            let heads_size = computation_buffer_sizes[heads_idx];
-
-            let instruction = AddBufferHeadsInstruction::new(
-                data_ptr, heads_ptr, output_ptr, data_size, heads_size,
-            )?;
-            Ok(Box::new(instruction))
+            let (data, heads) = (info.input[0], info.input[1]);
+            Box::new(AddBufferHeadsInstruction::new(
+                ptr(data),
+                ptr(heads),
+                ptr(info.output),
+                size(data),
+                size(heads),
+            )?)
         }
+    })
+}
+
+/// Borrows `buf[src..src + src_len]` and `buf[dst..dst + dst_len]` together, or `None`
+/// when the ranges overlap.
+pub(crate) fn split_src_dst(
+    buf: &mut [f32],
+    src: usize,
+    src_len: usize,
+    dst: usize,
+    dst_len: usize,
+) -> Option<(&[f32], &mut [f32])> {
+    if src + src_len <= dst {
+        let (head, tail) = buf.split_at_mut(dst);
+        Some((&head[src..src + src_len], &mut tail[..dst_len]))
+    } else if dst + dst_len <= src {
+        let (head, tail) = buf.split_at_mut(src);
+        Some((&tail[..src_len], &mut head[dst..dst + dst_len]))
+    } else {
+        None
     }
 }

@@ -83,22 +83,6 @@ pub fn get_specialized_wgsl_lanes(model_blob: &[f32], lanes: u32) -> Result<Stri
         out: String::new(),
     };
 
-    let instruction_count = blob.u32_at(HEADER_INSTRUCTION_COUNT_INDEX)? as usize;
-    let instructions_offset = blob.u32_at(HEADER_INSTRUCTIONS_OFFSET_INDEX)? as usize;
-    for idx in 0..instruction_count {
-        let base = instructions_offset + idx * INSTRUCTION_FIELDS;
-        let inst = Inst {
-            opcode: emitter.blob.u32_at(base)?,
-            input_ptr: emitter.blob.u32_at(base + 1)?,
-            output_ptr: emitter.blob.u32_at(base + 2)?,
-            data_size: emitter.blob.u32_at(base + 3)?,
-            param0: emitter.blob.u32_at(base + 4)?,
-            param1: emitter.blob.u32_at(base + 5)?,
-            param2: emitter.blob.u32_at(base + 6)?,
-        };
-        emitter.emit_instruction(idx, &inst)?;
-    }
-
     let cb_size = emitter.cb_size;
     let total = cb_size
         .checked_mul(lanes)
@@ -106,6 +90,22 @@ pub fn get_specialized_wgsl_lanes(model_blob: &[f32], lanes: u32) -> Result<Stri
         .ok_or_else(|| GpuModelError::InvalidModelBinary {
             message: format!("compute buffer {cb_size} f32s x {lanes} lanes overflows"),
         })?;
+    let instruction_count = blob.u32_at(HEADER_INSTRUCTION_COUNT_INDEX)? as usize;
+    let instructions_offset = blob.u32_at(HEADER_INSTRUCTIONS_OFFSET_INDEX)? as usize;
+    for idx in 0..instruction_count {
+        let base = instructions_offset.saturating_add(idx.saturating_mul(INSTRUCTION_FIELDS));
+        let inst = Inst {
+            opcode: emitter.blob.u32_at(base)?,
+            input_ptr: emitter.blob.u32_at(base.saturating_add(1))?,
+            output_ptr: emitter.blob.u32_at(base.saturating_add(2))?,
+            data_size: emitter.blob.u32_at(base.saturating_add(3))?,
+            param0: emitter.blob.u32_at(base.saturating_add(4))?,
+            param1: emitter.blob.u32_at(base.saturating_add(5))?,
+            param2: emitter.blob.u32_at(base.saturating_add(6))?,
+        };
+        emitter.emit_instruction(idx, &inst)?;
+    }
+
     Ok(format!(
         "// Specialized instmodel predict (lane-sliced shared-memory variant)\n\
          // Generated for a fixed topology: {instruction_count} instructions, \
@@ -197,6 +197,16 @@ fn inst_err(instruction_index: usize, message: impl Into<String>) -> GpuModelErr
     }
 }
 
+/// `base + i`, if it is below `limit`.
+fn in_range(base: u32, i: u32, limit: u32, what: &str, idx: usize) -> Result<u32, GpuModelError> {
+    base.checked_add(i).filter(|&v| v < limit).ok_or_else(|| {
+        inst_err(
+            idx,
+            format!("{what} {base}+{i} out of range ({limit} f32s)"),
+        )
+    })
+}
+
 fn f32_literal(value: f32, idx: usize) -> Result<String, GpuModelError> {
     if !value.is_finite() {
         return Err(inst_err(
@@ -250,48 +260,34 @@ fn activation_expr(activation: u32, expr: String, idx: usize) -> Result<String, 
 }
 
 impl Emitter<'_> {
-    /// Lane-sliced access to compute-buffer element `index` (a literal).
-    fn cb(&self, index: u32, idx: usize) -> Result<String, GpuModelError> {
-        if index >= self.cb_size {
-            return Err(inst_err(
-                idx,
-                format!("buffer index {index} out of range ({} f32s)", self.cb_size),
-            ));
-        }
+    /// Lane-sliced access to compute-buffer element `base + i` (a literal).
+    fn cb(&self, base: u32, i: u32, idx: usize) -> Result<String, GpuModelError> {
+        let index = in_range(base, i, self.cb_size, "buffer index", idx)?;
+        // index < cb_size, and cb_size * lanes was checked not to overflow.
         Ok(format!("compute_buffers[{}u + lane]", index * self.lanes))
     }
 
-    /// Weight read at a literal model-relative offset.
-    fn weight(&self, offset: u32, idx: usize) -> Result<String, GpuModelError> {
-        if offset >= self.full_size {
-            return Err(inst_err(
-                idx,
-                format!(
-                    "weight offset {offset} out of range ({} f32s)",
-                    self.full_size
-                ),
-            ));
-        }
+    /// Weight read at the literal model-relative offset `base + i`.
+    fn weight(&self, base: u32, i: u32, idx: usize) -> Result<String, GpuModelError> {
+        let offset = in_range(base, i, self.full_size, "weight offset", idx)?;
         Ok(format!("model_data[model_offset + {offset}u]"))
     }
 
-    /// Baked constant from the params region.
-    fn param_f32(&self, relative: u32, idx: usize) -> Result<f32, GpuModelError> {
-        let position = self.params_offset + relative;
-        if position >= self.full_size {
-            return Err(inst_err(
-                idx,
-                format!(
-                    "params offset {position} out of range ({} f32s)",
-                    self.full_size
-                ),
-            ));
-        }
+    /// Baked constant at params-relative position `base + i`.
+    fn param_f32(&self, base: u32, i: u32, idx: usize) -> Result<f32, GpuModelError> {
+        let relative = base.saturating_add(i);
+        let position = in_range(
+            self.params_offset,
+            relative,
+            self.full_size,
+            "params offset",
+            idx,
+        )?;
         self.blob.f32_at(position as usize)
     }
 
-    fn param_u32(&self, relative: u32, idx: usize) -> Result<u32, GpuModelError> {
-        Ok(self.param_f32(relative, idx)?.to_bits())
+    fn param_u32(&self, base: u32, i: u32, idx: usize) -> Result<u32, GpuModelError> {
+        Ok(self.param_f32(base, i, idx)?.to_bits())
     }
 
     fn line(&mut self, text: &str) {
@@ -339,32 +335,31 @@ impl Emitter<'_> {
         let output_size = inst.data_size;
         let input_size = inst.param1;
         let activation = inst.param2;
-        let weights_base = self.weights_offset + inst.param0;
-        let bias_base = weights_base + output_size * input_size;
-
+        let weights_base = self.weights_offset.saturating_add(inst.param0);
         let terms = output_size.saturating_mul(input_size);
+        let bias_base = weights_base.saturating_add(terms);
         if terms <= DOT_UNROLL_TERM_LIMIT {
             for out_idx in 0..output_size {
-                let row = weights_base + out_idx * input_size;
+                let row = weights_base.saturating_add(out_idx * input_size);
                 let mut products = Vec::with_capacity(input_size as usize);
                 for i in 0..input_size {
                     products.push(format!(
                         "{} * {}",
-                        self.weight(row + i, idx)?,
-                        self.cb(inst.input_ptr + i, idx)?
+                        self.weight(row, i, idx)?,
+                        self.cb(inst.input_ptr, i, idx)?
                     ));
                 }
                 let sum = format!(
                     "{} + {}",
                     balanced_tree(products, "+"),
-                    self.weight(bias_base + out_idx, idx)?
+                    self.weight(bias_base, out_idx, idx)?
                 );
                 let value = if activation == activation_types::SOFTMAX {
                     sum
                 } else {
                     activation_expr(activation, sum, idx)?
                 };
-                let store = self.cb(inst.output_ptr + out_idx, idx)?;
+                let store = self.cb(inst.output_ptr, out_idx, idx)?;
                 self.line(&format!("{store} = {value};"));
             }
         } else {
@@ -391,11 +386,11 @@ impl Emitter<'_> {
     ) -> Result<(), GpuModelError> {
         let output_size = inst.data_size;
         let input_size = inst.param1;
-        let last_weight = bias_base + output_size.saturating_sub(1);
+        let last_weight = bias_base.saturating_add(output_size.saturating_sub(1));
         // Validate the extremes once; the loop body stays within them.
-        self.weight(last_weight, idx)?;
-        self.cb(inst.input_ptr + input_size.saturating_sub(1), idx)?;
-        self.cb(inst.output_ptr + output_size.saturating_sub(1), idx)?;
+        self.weight(last_weight, 0, idx)?;
+        self.cb(inst.input_ptr, input_size.saturating_sub(1), idx)?;
+        self.cb(inst.output_ptr, output_size.saturating_sub(1), idx)?;
 
         let unroll_end = input_size & !3u32;
         let activation = inst.param2;
@@ -457,7 +452,7 @@ impl Emitter<'_> {
         }
         self.check_elementwise_size(inst.data_size, idx)?;
         for i in 0..inst.data_size {
-            let slot = self.cb(inst.input_ptr + i, idx)?;
+            let slot = self.cb(inst.input_ptr, i, idx)?;
             let value = activation_expr(activation, slot.clone(), idx)?;
             self.line(&format!("{slot} = {value};"));
         }
@@ -472,8 +467,8 @@ impl Emitter<'_> {
     ) -> Result<(), GpuModelError> {
         self.check_elementwise_size(inst.data_size, idx)?;
         for i in 0..inst.data_size {
-            let slot = self.cb(inst.input_ptr + i, idx)?;
-            let constant = f32_literal(self.param_f32(inst.param0 + i, idx)?, idx)?;
+            let slot = self.cb(inst.input_ptr, i, idx)?;
+            let constant = f32_literal(self.param_f32(inst.param0, i, idx)?, idx)?;
             self.line(&format!("{slot} = {slot} {op} {constant};"));
         }
         Ok(())
@@ -482,8 +477,8 @@ impl Emitter<'_> {
     fn emit_copy(&mut self, idx: usize, inst: &Inst) -> Result<(), GpuModelError> {
         self.check_elementwise_size(inst.data_size, idx)?;
         for i in 0..inst.data_size {
-            let dst = self.cb(inst.output_ptr + i, idx)?;
-            let src = self.cb(inst.input_ptr + i, idx)?;
+            let dst = self.cb(inst.output_ptr, i, idx)?;
+            let src = self.cb(inst.input_ptr, i, idx)?;
             self.line(&format!("{dst} = {src};"));
         }
         Ok(())
@@ -492,9 +487,9 @@ impl Emitter<'_> {
     fn emit_copy_masked(&mut self, idx: usize, inst: &Inst) -> Result<(), GpuModelError> {
         self.check_elementwise_size(inst.data_size, idx)?;
         for i in 0..inst.data_size {
-            let pointer = self.param_u32(inst.param0 + i, idx)?;
-            let dst = self.cb(inst.output_ptr + i, idx)?;
-            let src = self.cb(pointer, idx)?;
+            let pointer = self.param_u32(inst.param0, i, idx)?;
+            let dst = self.cb(inst.output_ptr, i, idx)?;
+            let src = self.cb(pointer, 0, idx)?;
             self.line(&format!("{dst} = {src};"));
         }
         Ok(())
@@ -503,16 +498,16 @@ impl Emitter<'_> {
     fn emit_clip(&mut self, idx: usize, inst: &Inst) -> Result<(), GpuModelError> {
         self.check_elementwise_size(inst.data_size, idx)?;
         for i in 0..inst.data_size {
-            let slot = self.cb(inst.input_ptr + i, idx)?;
+            let slot = self.cb(inst.input_ptr, i, idx)?;
             let lower = if inst.param0 == CLIP_BOUND_NONE {
                 None
             } else {
-                Some(f32_literal(self.param_f32(inst.param0 + i, idx)?, idx)?)
+                Some(f32_literal(self.param_f32(inst.param0, i, idx)?, idx)?)
             };
             let upper = if inst.param1 == CLIP_BOUND_NONE {
                 None
             } else {
-                Some(f32_literal(self.param_f32(inst.param1 + i, idx)?, idx)?)
+                Some(f32_literal(self.param_f32(inst.param1, i, idx)?, idx)?)
             };
             match (lower, upper) {
                 (Some(lo), Some(hi)) => {
@@ -539,14 +534,14 @@ impl Emitter<'_> {
         }
         let mut sources = Vec::with_capacity(input_count as usize);
         for j in 0..input_count {
-            sources.push(self.param_u32(inst.param0 + j, idx)?);
+            sources.push(self.param_u32(inst.param0, j, idx)?);
         }
         for i in 0..inst.data_size {
             let mut terms = Vec::with_capacity(sources.len());
             for source in &sources {
-                terms.push(self.cb(source + i, idx)?);
+                terms.push(self.cb(*source, i, idx)?);
             }
-            let dst = self.cb(inst.output_ptr + i, idx)?;
+            let dst = self.cb(inst.output_ptr, i, idx)?;
             self.line(&format!("{dst} = {};", balanced_tree(terms, op)));
         }
         Ok(())
@@ -571,9 +566,9 @@ impl Emitter<'_> {
         }
         let head_dim = inst.data_size / num_heads;
         for i in 0..inst.data_size {
-            let dst = self.cb(inst.output_ptr + i, idx)?;
-            let data = self.cb(inst.input_ptr + i, idx)?;
-            let head = self.cb(inst.param0 + i / head_dim, idx)?;
+            let dst = self.cb(inst.output_ptr, i, idx)?;
+            let data = self.cb(inst.input_ptr, i, idx)?;
+            let head = self.cb(inst.param0, i / head_dim, idx)?;
             self.line(&format!("{dst} = {data} {op} {head};"));
         }
         Ok(())
@@ -583,9 +578,9 @@ impl Emitter<'_> {
         self.check_elementwise_size(inst.data_size, idx)?;
         let mut terms = Vec::with_capacity(inst.data_size as usize);
         for i in 0..inst.data_size {
-            terms.push(self.cb(inst.input_ptr + i, idx)?);
+            terms.push(self.cb(inst.input_ptr, i, idx)?);
         }
-        let dst = self.cb(inst.output_ptr, idx)?;
+        let dst = self.cb(inst.output_ptr, 0, idx)?;
         self.line(&format!("{dst} = {};", balanced_tree(terms, "+")));
         Ok(())
     }

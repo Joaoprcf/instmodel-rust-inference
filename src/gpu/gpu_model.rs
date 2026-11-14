@@ -1,8 +1,16 @@
 //! GPU model serialization and management.
 
+use crate::errors::InstructionModelError;
 use crate::gpu::errors::{GpuModelError, GpuModelResult};
 use crate::gpu::gpu_instruction::GpuInstruction;
 use crate::instruction_model_info::{InstructionInfo, InstructionModelInfo};
+use crate::instruction_model_validation as validation;
+
+fn model_error(e: InstructionModelError) -> GpuModelError {
+    GpuModelError::InvalidModelBinary {
+        message: e.to_string(),
+    }
+}
 
 /// Magic number for GPU model binary format ("GPMI" in little-endian).
 pub const GPU_MODEL_MAGIC: u32 = 0x494D5047;
@@ -143,12 +151,14 @@ struct GpuModelBuilder<'a> {
 impl<'a> GpuModelBuilder<'a> {
     fn new(info: &'a InstructionModelInfo) -> GpuModelResult<Self> {
         let computation_buffer_sizes = info.computation_buffer_sizes.clone();
+        let Some(&first) = computation_buffer_sizes.first() else {
+            return Err(model_error(InstructionModelError::NoLayersProvided));
+        };
         let mut computation_buffer_indexes = vec![0usize];
-        let mut current_idx = computation_buffer_sizes[0];
-
+        let mut current_idx = first;
         for &size in computation_buffer_sizes.iter().skip(1) {
             computation_buffer_indexes.push(current_idx);
-            current_idx += size;
+            current_idx = current_idx.saturating_add(size);
         }
 
         if current_idx > MAX_GPU_COMPUTE_BUFFER {
@@ -236,26 +246,14 @@ impl<'a> GpuModelBuilder<'a> {
     }
 
     fn calculate_feature_size(&self) -> GpuModelResult<usize> {
-        if let Some(size) = self.info.feature_size {
-            return Ok(size);
-        }
-        if let Some(features) = &self.info.features {
-            let mut total = 0;
-            for feature in features {
-                if let Some(open) = feature.find('[') {
-                    if feature.ends_with(']') {
-                        let num_str = &feature[open + 1..feature.len() - 1];
-                        total += num_str.parse::<usize>().unwrap_or(1);
-                    } else {
-                        total += 1;
-                    }
-                } else {
-                    total += 1;
-                }
-            }
-            return Ok(total);
-        }
-        Ok(self.computation_buffer_sizes[0])
+        let feature_size = if self.info.features.is_none() && self.info.feature_size.is_none() {
+            self.computation_buffer_sizes[0]
+        } else {
+            validation::calculate_feature_size(self.info).map_err(model_error)?
+        };
+        validation::validate_feature_size(feature_size, &self.computation_buffer_sizes)
+            .map_err(|e| model_error(e.into()))?;
+        Ok(feature_size)
     }
 
     fn collect_weights_and_params(&mut self) -> GpuModelResult<()> {
@@ -286,7 +284,39 @@ impl<'a> GpuModelBuilder<'a> {
 
     fn build_instructions(&mut self) -> GpuModelResult<()> {
         let info = self.info;
+        let sizes = &info.computation_buffer_sizes;
+        let parameters = info.parameters.as_deref().unwrap_or(&[]);
+        let maps = info.maps.as_deref().unwrap_or(&[]);
         for (idx, inst_info) in info.instructions.iter().enumerate() {
+            if let InstructionInfo::Attention(_) | InstructionInfo::MapTransform(_) = inst_info {
+                return Err(GpuModelError::UnsupportedInstruction {
+                    instruction_type: format!("{inst_info:?}"),
+                });
+            }
+            validation::validate_instruction(
+                inst_info,
+                sizes,
+                &info.weights,
+                &info.bias,
+                parameters,
+                maps,
+            )
+            .map_err(|e| match e {
+                InstructionModelError::WeightsIndexOutOfBounds { .. } => {
+                    GpuModelError::MissingWeights {
+                        instruction_index: idx,
+                    }
+                }
+                InstructionModelError::ParametersIndexOutOfBounds { .. } => {
+                    GpuModelError::MissingParameters {
+                        instruction_index: idx,
+                    }
+                }
+                e => GpuModelError::InvalidInstruction {
+                    instruction_index: idx,
+                    message: e.to_string(),
+                },
+            })?;
             let gpu_inst = self.convert_instruction(inst_info, idx)?;
             self.instructions.push(gpu_inst);
         }
@@ -303,278 +333,145 @@ impl<'a> GpuModelBuilder<'a> {
         offset
     }
 
-    fn resolve_optional_params(
-        &self,
-        slot: Option<usize>,
-        idx: usize,
-    ) -> GpuModelResult<Option<u32>> {
-        match slot {
-            None => Ok(None),
-            Some(slot) => self.params_offsets.get(slot).copied().map(Some).ok_or(
-                GpuModelError::MissingParameters {
-                    instruction_index: idx,
-                },
-            ),
-        }
+    /// Stores the input pointer list of an N-ary element-wise buffers op;
+    /// returns `(pointers_offset, input_count)`.
+    fn buffers_pointer_payload(&mut self, inputs: &[usize]) -> (u32, u32) {
+        let pointers: Vec<u32> = inputs.iter().map(|&b| self.ptr(b)).collect();
+        (self.push_pointer_payload(&pointers), pointers.len() as u32)
     }
 
-    /// Validates an N-ary element-wise buffers op and stores its input
-    /// pointer list; returns `(pointers_offset, input_count)`.
-    fn buffers_pointer_payload(
-        &mut self,
-        inputs: &[usize],
-        idx: usize,
-    ) -> GpuModelResult<(u32, u32)> {
-        if inputs.len() < 2 {
-            return Err(GpuModelError::InvalidInstruction {
-                instruction_index: idx,
-                message: format!(
-                    "element-wise buffers op requires at least 2 inputs, got {}",
-                    inputs.len()
-                ),
-            });
-        }
-        let pointers: Vec<u32> = inputs
-            .iter()
-            .map(|&buffer| self.computation_buffer_indexes[buffer] as u32)
-            .collect();
-        let count = pointers.len() as u32;
-        Ok((self.push_pointer_payload(&pointers), count))
+    // Casts below are lossless: `new` bounds every offset by MAX_GPU_COMPUTE_BUFFER.
+    fn ptr(&self, buffer: usize) -> u32 {
+        self.computation_buffer_indexes[buffer] as u32
     }
 
-    fn heads_operands(&self, inputs: &[usize], idx: usize) -> GpuModelResult<HeadsOperands> {
-        if inputs.len() != 2 {
-            return Err(GpuModelError::InvalidInstruction {
-                instruction_index: idx,
-                message: format!(
-                    "buffer-heads op requires exactly [data, heads] inputs, got {}",
-                    inputs.len()
-                ),
-            });
-        }
-        let data_size = self.computation_buffer_sizes[inputs[0]] as u32;
-        let num_heads = self.computation_buffer_sizes[inputs[1]] as u32;
-        if num_heads == 0 || !data_size.is_multiple_of(num_heads) {
-            return Err(GpuModelError::InvalidInstruction {
-                instruction_index: idx,
-                message: format!(
-                    "data size {} is not divisible by heads size {}",
-                    data_size, num_heads
-                ),
-            });
-        }
-        Ok(HeadsOperands {
-            data_ptr: self.computation_buffer_indexes[inputs[0]] as u32,
-            heads_ptr: self.computation_buffer_indexes[inputs[1]] as u32,
-            data_size,
-            num_heads,
-        })
+    fn size(&self, buffer: usize) -> u32 {
+        self.computation_buffer_sizes[buffer] as u32
     }
 
+    /// Converts an instruction already checked by `validate_instruction`.
     fn convert_instruction(
         &mut self,
         info: &InstructionInfo,
         idx: usize,
     ) -> GpuModelResult<GpuInstruction> {
-        match info {
-            InstructionInfo::Dot(dot_info) => {
-                let input_ptr = self.computation_buffer_indexes[dot_info.input] as u32;
-                let output_ptr = self.computation_buffer_indexes[dot_info.output] as u32;
-                let output_size = self.computation_buffer_sizes[dot_info.output] as u32;
-                let input_size = self.computation_buffer_sizes[dot_info.input] as u32;
-
-                let weights_offset = self.weights_offsets.get(dot_info.weights).copied().ok_or(
-                    GpuModelError::MissingWeights {
-                        instruction_index: idx,
-                    },
-                )?;
-
-                Ok(GpuInstruction::dot(
-                    input_ptr,
-                    output_ptr,
-                    output_size,
-                    weights_offset,
-                    input_size,
-                    dot_info.activation,
-                ))
+        Ok(match info {
+            InstructionInfo::Dot(i) => GpuInstruction::dot(
+                self.ptr(i.input),
+                self.ptr(i.output),
+                self.size(i.output),
+                self.weights_offsets[i.weights],
+                self.size(i.input),
+                i.activation,
+            ),
+            InstructionInfo::Activation(i) => {
+                GpuInstruction::activation(self.ptr(i.input), self.size(i.input), i.activation)
             }
-            InstructionInfo::Activation(act_info) => {
-                let ptr = self.computation_buffer_indexes[act_info.input] as u32;
-                let size = self.computation_buffer_sizes[act_info.input] as u32;
-
-                Ok(GpuInstruction::activation(ptr, size, act_info.activation))
-            }
-            InstructionInfo::ElemWiseAdd(add_info) => {
-                let ptr = self.computation_buffer_indexes[add_info.input] as u32;
-                let size = self.computation_buffer_sizes[add_info.input] as u32;
-
-                let params_offset = self
-                    .params_offsets
-                    .get(add_info.parameters)
-                    .copied()
-                    .ok_or(GpuModelError::MissingParameters {
-                        instruction_index: idx,
-                    })?;
-
-                Ok(GpuInstruction::elem_wise_add(ptr, size, params_offset))
-            }
-            InstructionInfo::ElemWiseMul(mul_info) => {
-                let ptr = self.computation_buffer_indexes[mul_info.input] as u32;
-                let size = self.computation_buffer_sizes[mul_info.input] as u32;
-
-                let params_offset = self
-                    .params_offsets
-                    .get(mul_info.parameters)
-                    .copied()
-                    .ok_or(GpuModelError::MissingParameters {
-                        instruction_index: idx,
-                    })?;
-
-                Ok(GpuInstruction::elem_wise_mul(ptr, size, params_offset))
-            }
-            InstructionInfo::Copy(copy_info) => {
-                let src_ptr = self.computation_buffer_indexes[copy_info.input] as u32;
-                let dst_ptr = self.computation_buffer_indexes[copy_info.output] as u32
-                    + copy_info.internal_index as u32;
-                let size = self.computation_buffer_sizes[copy_info.input] as u32;
-
-                Ok(GpuInstruction::copy(src_ptr, dst_ptr, size))
-            }
-            InstructionInfo::CopyMasked(masked_info) => {
-                if masked_info.indexes.is_empty() {
+            InstructionInfo::ElemWiseAdd(i) => GpuInstruction::elem_wise_add(
+                self.ptr(i.input),
+                self.size(i.input),
+                self.params_offsets[i.parameters],
+            ),
+            InstructionInfo::ElemWiseMul(i) => GpuInstruction::elem_wise_mul(
+                self.ptr(i.input),
+                self.size(i.input),
+                self.params_offsets[i.parameters],
+            ),
+            InstructionInfo::Copy(i) => GpuInstruction::copy(
+                self.ptr(i.input),
+                self.ptr(i.output) + i.internal_index as u32,
+                self.size(i.input),
+            ),
+            InstructionInfo::CopyMasked(i) => {
+                if i.indexes.is_empty() {
                     return Err(GpuModelError::InvalidInstruction {
                         instruction_index: idx,
                         message: "COPY_MASKED requires at least one index".to_string(),
                     });
                 }
-                let input_size = self.computation_buffer_sizes[masked_info.input];
-                if let Some(&bad) = masked_info.indexes.iter().find(|&&i| i >= input_size) {
-                    return Err(GpuModelError::InvalidInstruction {
-                        instruction_index: idx,
-                        message: format!(
-                            "COPY_MASKED index {} out of bounds for input of size {}",
-                            bad, input_size
-                        ),
-                    });
-                }
-                let input_base = self.computation_buffer_indexes[masked_info.input] as u32;
-                let output_ptr = self.computation_buffer_indexes[masked_info.output] as u32;
-                let pointers: Vec<u32> = masked_info
-                    .indexes
-                    .iter()
-                    .map(|&index| input_base + index as u32)
-                    .collect();
-                let count = pointers.len() as u32;
-                let pointers_offset = self.push_pointer_payload(&pointers);
-                Ok(GpuInstruction::copy_masked(
-                    pointers_offset,
+                let base = self.ptr(i.input);
+                let pointers: Vec<u32> = i.indexes.iter().map(|&x| base + x as u32).collect();
+                let offset = self.push_pointer_payload(&pointers);
+                GpuInstruction::copy_masked(offset, pointers.len() as u32, self.ptr(i.output))
+            }
+            InstructionInfo::ClipElementwise(i) => GpuInstruction::clip_elementwise(
+                self.ptr(i.input),
+                self.size(i.input),
+                i.parameters_min.map(|p| self.params_offsets[p]),
+                i.parameters_max.map(|p| self.params_offsets[p]),
+            ),
+            InstructionInfo::ElemWiseBuffersAdd(i) => {
+                let (offset, count) = self.buffers_pointer_payload(&i.input);
+                GpuInstruction::elem_wise_buffers_add(
+                    self.ptr(i.output),
+                    self.size(i.output),
+                    offset,
                     count,
-                    output_ptr,
-                ))
+                )
             }
-            InstructionInfo::ClipElementwise(clip_info) => {
-                let ptr = self.computation_buffer_indexes[clip_info.input] as u32;
-                let size = self.computation_buffer_sizes[clip_info.input] as u32;
-                let min_offset = self.resolve_optional_params(clip_info.parameters_min, idx)?;
-                let max_offset = self.resolve_optional_params(clip_info.parameters_max, idx)?;
-                Ok(GpuInstruction::clip_elementwise(
-                    ptr, size, min_offset, max_offset,
-                ))
+            InstructionInfo::ElemWiseBuffersMul(i) => {
+                let (offset, count) = self.buffers_pointer_payload(&i.input);
+                GpuInstruction::elem_wise_buffers_mul(
+                    self.ptr(i.output),
+                    self.size(i.output),
+                    offset,
+                    count,
+                )
             }
-            InstructionInfo::ElemWiseBuffersAdd(buffers_info) => {
-                let (pointers_offset, input_count) =
-                    self.buffers_pointer_payload(&buffers_info.input, idx)?;
-                let output_ptr = self.computation_buffer_indexes[buffers_info.output] as u32;
-                let size = self.computation_buffer_sizes[buffers_info.output] as u32;
-                Ok(GpuInstruction::elem_wise_buffers_add(
-                    output_ptr,
-                    size,
-                    pointers_offset,
-                    input_count,
-                ))
+            InstructionInfo::MultiplyBufferHeads(i) => GpuInstruction::multiply_buffer_heads(
+                self.ptr(i.input[0]),
+                self.ptr(i.output),
+                self.size(i.input[0]),
+                self.ptr(i.input[1]),
+                self.size(i.input[1]),
+            ),
+            InstructionInfo::AddBufferHeads(i) => GpuInstruction::add_buffer_heads(
+                self.ptr(i.input[0]),
+                self.ptr(i.output),
+                self.size(i.input[0]),
+                self.ptr(i.input[1]),
+                self.size(i.input[1]),
+            ),
+            InstructionInfo::ReduceSum(i) => GpuInstruction::reduce_sum(
+                self.ptr(i.input),
+                self.ptr(i.output),
+                self.size(i.input),
+            ),
+            InstructionInfo::Attention(_) | InstructionInfo::MapTransform(_) => {
+                unreachable!("rejected by build_instructions")
             }
-            InstructionInfo::ElemWiseBuffersMul(buffers_info) => {
-                let (pointers_offset, input_count) =
-                    self.buffers_pointer_payload(&buffers_info.input, idx)?;
-                let output_ptr = self.computation_buffer_indexes[buffers_info.output] as u32;
-                let size = self.computation_buffer_sizes[buffers_info.output] as u32;
-                Ok(GpuInstruction::elem_wise_buffers_mul(
-                    output_ptr,
-                    size,
-                    pointers_offset,
-                    input_count,
-                ))
-            }
-            InstructionInfo::MultiplyBufferHeads(heads_info) => {
-                let operands = self.heads_operands(&heads_info.input, idx)?;
-                let output_ptr = self.computation_buffer_indexes[heads_info.output] as u32;
-                Ok(GpuInstruction::multiply_buffer_heads(
-                    operands.data_ptr,
-                    output_ptr,
-                    operands.data_size,
-                    operands.heads_ptr,
-                    operands.num_heads,
-                ))
-            }
-            InstructionInfo::AddBufferHeads(heads_info) => {
-                let operands = self.heads_operands(&heads_info.input, idx)?;
-                let output_ptr = self.computation_buffer_indexes[heads_info.output] as u32;
-                Ok(GpuInstruction::add_buffer_heads(
-                    operands.data_ptr,
-                    output_ptr,
-                    operands.data_size,
-                    operands.heads_ptr,
-                    operands.num_heads,
-                ))
-            }
-            InstructionInfo::ReduceSum(reduce_info) => {
-                let input_ptr = self.computation_buffer_indexes[reduce_info.input] as u32;
-                let output_ptr = self.computation_buffer_indexes[reduce_info.output] as u32;
-                let input_size = self.computation_buffer_sizes[reduce_info.input] as u32;
-                Ok(GpuInstruction::reduce_sum(
-                    input_ptr, output_ptr, input_size,
-                ))
-            }
-            _ => Err(GpuModelError::UnsupportedInstruction {
-                instruction_type: format!("{:?}", info),
-            }),
-        }
+        })
     }
-}
-
-/// Resolved operands of a buffer-heads instruction.
-struct HeadsOperands {
-    data_ptr: u32,
-    heads_ptr: u32,
-    data_size: u32,
-    num_heads: u32,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::gpu::gpu_instruction::{CLIP_BOUND_NONE, opcodes};
-    use crate::instruction_model_info::{
-        ClipElementwiseInstructionInfo, CopyMaskedInstructionInfo, DotInstructionInfo,
-        ElemWiseBuffersAddInstructionInfo, MultiplyBufferHeadsInstructionInfo,
-    };
+    use serde_json::{Value, json};
 
-    fn weightless_info(
-        computation_buffer_sizes: Vec<usize>,
-        instructions: Vec<InstructionInfo>,
-        parameters: Option<Vec<Vec<f32>>>,
+    fn info(v: Value) -> InstructionModelInfo {
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn dense_info() -> InstructionModelInfo {
+        info(json!({"feature_size": 3, "buffer_sizes": [3, 2, 1],
+            "instructions": [
+                {"type": "DOT", "input": 0, "output": 1, "weights": 0, "activation": "RELU"},
+                {"type": "DOT", "input": 1, "output": 2, "weights": 1}],
+            "weights": [[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], [[1.0, 2.0]]],
+            "bias": [[0.1, 0.2], [0.5]]}))
+    }
+
+    fn weightless(
+        buffer_sizes: Value,
+        instruction: Value,
+        parameters: Value,
     ) -> InstructionModelInfo {
-        InstructionModelInfo {
-            features: None,
-            feature_size: Some(computation_buffer_sizes[0]),
-            computation_buffer_sizes,
-            instructions,
-            weights: vec![],
-            bias: vec![],
-            parameters,
-            maps: None,
-            validation_data: None,
-        }
+        info(
+            json!({"feature_size": buffer_sizes[0], "buffer_sizes": buffer_sizes,
+            "instructions": [instruction], "weights": [], "bias": [], "parameters": parameters}),
+        )
     }
 
     fn instruction_fields(gpu_model: &GpuModel, index: usize) -> Vec<u32> {
@@ -586,266 +483,219 @@ mod tests {
     }
 
     #[test]
-    fn test_simple_model_serialization() {
-        let info = InstructionModelInfo {
-            features: Some(vec!["f1".to_string(), "f2".to_string()]),
-            feature_size: Some(2),
-            computation_buffer_sizes: vec![2, 1],
-            instructions: vec![InstructionInfo::Dot(DotInstructionInfo {
-                input: 0,
-                output: 1,
-                weights: 0,
-                activation: None,
-            })],
-            weights: vec![vec![vec![1.0, 2.0]]],
-            bias: vec![vec![0.5]],
-            parameters: None,
-            maps: None,
-            validation_data: None,
-        };
+    fn header_and_theta_region() {
+        let mut gpu_model = GpuModel::from_info(&dense_info()).unwrap();
+        assert_eq!((gpu_model.feature_size(), gpu_model.output_size()), (3, 1));
+        assert_eq!(
+            (gpu_model.compute_buffer_size(), gpu_model.output_start()),
+            (6, 5)
+        );
+        let header: Vec<u32> = gpu_model.as_f32_slice()[..HEADER_SIZE_F32S]
+            .iter()
+            .map(|v| v.to_bits())
+            .collect();
+        assert_eq!(&header[..4], &[GPU_MODEL_MAGIC, GPU_MODEL_VERSION, 3, 1]);
+        assert_eq!(header[7] as usize, gpu_model.weights_offset());
+        assert_eq!(header[8] as usize, gpu_model.theta_len());
+        assert_eq!(header[12] as usize, gpu_model.full_size());
 
-        let gpu_model = GpuModel::from_info(&info).expect("Failed to create GPU model");
-
-        assert_eq!(gpu_model.feature_size(), 2);
-        assert_eq!(gpu_model.output_size(), 1);
-        assert_eq!(gpu_model.compute_buffer_size(), 3);
-        assert_eq!(gpu_model.output_start(), 2);
-
-        // Verify header
-        let data = gpu_model.as_f32_slice();
-        assert_eq!(data[0].to_bits(), GPU_MODEL_MAGIC);
-        assert_eq!(data[1].to_bits(), GPU_MODEL_VERSION);
-        assert_eq!(data[2].to_bits(), 2); // feature_size
-        assert_eq!(data[3].to_bits(), 1); // output_size
-    }
-
-    #[test]
-    fn test_multi_layer_model() {
-        use crate::activation::Activation;
-
-        let info = InstructionModelInfo {
-            features: None,
-            feature_size: Some(3),
-            computation_buffer_sizes: vec![3, 4, 2],
-            instructions: vec![
-                InstructionInfo::Dot(DotInstructionInfo {
-                    input: 0,
-                    output: 1,
-                    weights: 0,
-                    activation: Some(Activation::Relu),
-                }),
-                InstructionInfo::Dot(DotInstructionInfo {
-                    input: 1,
-                    output: 2,
-                    weights: 1,
-                    activation: Some(Activation::Sigmoid),
-                }),
-            ],
-            weights: vec![
-                vec![
-                    vec![0.1, 0.2, 0.3],
-                    vec![0.4, 0.5, 0.6],
-                    vec![0.7, 0.8, 0.9],
-                    vec![1.0, 1.1, 1.2],
-                ],
-                vec![vec![0.1, 0.2, 0.3, 0.4], vec![0.5, 0.6, 0.7, 0.8]],
-            ],
-            bias: vec![vec![0.1, 0.2, 0.3, 0.4], vec![0.01, 0.02]],
-            parameters: None,
-            maps: None,
-            validation_data: None,
-        };
-
-        let gpu_model = GpuModel::from_info(&info).expect("Failed to create GPU model");
-
-        assert_eq!(gpu_model.feature_size(), 3);
-        assert_eq!(gpu_model.output_size(), 2);
-        assert_eq!(gpu_model.compute_buffer_size(), 9); // 3 + 4 + 2
-    }
-
-    #[test]
-    fn test_full_model_size_in_header() {
-        let info = InstructionModelInfo {
-            features: None,
-            feature_size: Some(2),
-            computation_buffer_sizes: vec![2, 1],
-            instructions: vec![InstructionInfo::Dot(DotInstructionInfo {
-                input: 0,
-                output: 1,
-                weights: 0,
-                activation: None,
-            })],
-            weights: vec![vec![vec![1.0, 2.0]]],
-            bias: vec![vec![0.5]],
-            parameters: None,
-            maps: None,
-            validation_data: None,
-        };
-
-        let gpu_model = GpuModel::from_info(&info).expect("Failed to create GPU model");
-        let data = gpu_model.as_f32_slice();
-
-        // Header field 12 should contain full_model_size
-        let full_model_size_from_header = data[12].to_bits() as usize;
-        assert_eq!(full_model_size_from_header, gpu_model.full_size());
-    }
-
-    #[test]
-    fn test_theta_accessors_match_header() {
-        let info = InstructionModelInfo {
-            features: None,
-            feature_size: Some(2),
-            computation_buffer_sizes: vec![2, 2],
-            instructions: vec![InstructionInfo::Dot(DotInstructionInfo {
-                input: 0,
-                output: 1,
-                weights: 0,
-                activation: None,
-            })],
-            weights: vec![vec![vec![1.0, 2.0], vec![3.0, 4.0]]],
-            bias: vec![vec![0.5, -0.5]],
-            parameters: None,
-            maps: None,
-            validation_data: None,
-        };
-
-        let mut gpu_model = GpuModel::from_info(&info).expect("Failed to create GPU model");
-        let data = gpu_model.as_f32_slice();
-        assert_eq!(gpu_model.weights_offset(), data[7].to_bits() as usize);
-        assert_eq!(gpu_model.theta_len(), data[8].to_bits() as usize);
-        assert_eq!(gpu_model.theta_len(), 6);
-
-        // Canonical order: row-major weights then bias.
-        let mut theta = vec![0.0f32; 6];
+        // Canonical order: per slot, row-major weights then bias.
+        let mut theta = vec![0.0f32; 11];
         gpu_model.read_theta(&mut theta).unwrap();
-        assert_eq!(theta, vec![1.0, 2.0, 3.0, 4.0, 0.5, -0.5]);
-
-        let new_theta = vec![9.0, 8.0, 7.0, 6.0, 5.0, 4.0];
+        assert_eq!(
+            theta,
+            vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.1, 0.2, 1.0, 2.0, 0.5]
+        );
+        let new_theta: Vec<f32> = (0..11).map(|v| v as f32).collect();
         gpu_model.write_theta(&new_theta).unwrap();
         let offset = gpu_model.weights_offset();
         assert_eq!(
-            &gpu_model.as_f32_slice()[offset..offset + 6],
+            &gpu_model.as_f32_slice()[offset..offset + 11],
             &new_theta[..]
         );
-
-        let result = gpu_model.write_theta(&[1.0, 2.0]);
         assert!(matches!(
-            result,
+            gpu_model.write_theta(&[1.0, 2.0]),
             Err(GpuModelError::ThetaLengthMismatch {
-                expected: 6,
+                expected: 11,
                 got: 2
             })
         ));
     }
 
     #[test]
-    fn test_copy_masked_payload_absolute_pointers() {
-        let info = weightless_info(
-            vec![4, 2],
-            vec![InstructionInfo::CopyMasked(CopyMaskedInstructionInfo {
-                input: 0,
-                output: 1,
-                indexes: vec![3, 1],
-            })],
-            None,
-        );
-
-        let gpu_model = GpuModel::from_info(&info).expect("Failed to create GPU model");
+    fn copy_masked_payload_holds_absolute_pointers() {
+        let gpu_model = GpuModel::from_info(&weightless(
+            json!([4, 2]),
+            json!({"type": "COPY_MASKED", "input": 0, "output": 1, "indexes": [3, 1]}),
+            json!(null),
+        ))
+        .unwrap();
         let data = gpu_model.as_f32_slice();
-
         let params_offset = data[9].to_bits() as usize;
-        assert_eq!(data[10].to_bits(), 2); // params region holds the two pointers
+        assert_eq!(data[10].to_bits(), 2);
         assert_eq!(data[params_offset].to_bits(), 3);
         assert_eq!(data[params_offset + 1].to_bits(), 1);
+        assert_eq!(
+            instruction_fields(&gpu_model, 0)[..5],
+            [opcodes::COPY_MASKED, 0, 4, 2, 0]
+        );
+    }
 
+    #[test]
+    fn clip_missing_bound_uses_sentinel() {
+        let gpu_model = GpuModel::from_info(&weightless(
+            json!([2]),
+            json!({"type": "CLIP_ELEMENTWISE", "input": 0, "parameters_max": 0}),
+            json!([[1.0, 1.0]]),
+        ))
+        .unwrap();
         let fields = instruction_fields(&gpu_model, 0);
-        assert_eq!(fields[0], opcodes::COPY_MASKED);
-        assert_eq!(fields[2], 4); // output_ptr = base of buffer 1
-        assert_eq!(fields[3], 2); // data_size = index count
-        assert_eq!(fields[4], 0); // param0 = params-relative list offset
+        assert_eq!(
+            (fields[0], fields[4], fields[5]),
+            (opcodes::CLIP_ELEMENTWISE, CLIP_BOUND_NONE, 0)
+        );
     }
 
     #[test]
-    fn test_clip_sentinel_encoding() {
-        let info = weightless_info(
-            vec![2],
-            vec![InstructionInfo::ClipElementwise(
-                ClipElementwiseInstructionInfo {
-                    input: 0,
-                    parameters_min: None,
-                    parameters_max: Some(0),
+    fn rejects_malformed_models() {
+        use GpuModelError as E;
+        let cases: Vec<(InstructionModelInfo, fn(&E) -> bool)> = vec![
+            (
+                weightless(
+                    json!([3, 3]),
+                    json!({"type": "ADD_ELEMENTWISE_BUFFERS", "input": [0], "output": 1}),
+                    json!(null),
+                ),
+                |e| {
+                    matches!(
+                        e,
+                        E::InvalidInstruction {
+                            instruction_index: 0,
+                            ..
+                        }
+                    )
                 },
-            )],
-            Some(vec![vec![1.0, 1.0]]),
-        );
-
-        let gpu_model = GpuModel::from_info(&info).expect("Failed to create GPU model");
-        let fields = instruction_fields(&gpu_model, 0);
-        assert_eq!(fields[0], opcodes::CLIP_ELEMENTWISE);
-        assert_eq!(fields[4], CLIP_BOUND_NONE);
-        assert_eq!(fields[5], 0);
-    }
-
-    #[test]
-    fn test_buffers_arity_rejected() {
-        let info = weightless_info(
-            vec![3, 3],
-            vec![InstructionInfo::ElemWiseBuffersAdd(
-                ElemWiseBuffersAddInstructionInfo {
-                    input: vec![0],
-                    output: 1,
+            ),
+            (
+                weightless(
+                    json!([3, 2, 3]),
+                    json!({"type": "MULTIPLY_BUFFER_HEADS", "input": [0, 1], "output": 2}),
+                    json!(null),
+                ),
+                |e| {
+                    matches!(
+                        e,
+                        E::InvalidInstruction {
+                            instruction_index: 0,
+                            ..
+                        }
+                    )
                 },
-            )],
-            None,
-        );
-
-        let result = GpuModel::from_info(&info);
-        assert!(matches!(
-            result,
-            Err(GpuModelError::InvalidInstruction {
-                instruction_index: 0,
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn test_heads_divisibility_rejected() {
-        let info = weightless_info(
-            vec![3, 2, 3],
-            vec![InstructionInfo::MultiplyBufferHeads(
-                MultiplyBufferHeadsInstructionInfo {
-                    input: vec![0, 1],
-                    output: 2,
+            ),
+            (
+                weightless(
+                    json!([2, 3]),
+                    json!({"type": "COPY", "input": 0, "output": 1, "internal_index": 2}),
+                    json!(null),
+                ),
+                |e| {
+                    matches!(
+                        e,
+                        E::InvalidInstruction {
+                            instruction_index: 0,
+                            ..
+                        }
+                    )
                 },
-            )],
-            None,
-        );
-
-        let result = GpuModel::from_info(&info);
-        assert!(matches!(
-            result,
-            Err(GpuModelError::InvalidInstruction {
-                instruction_index: 0,
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn test_blob_version_is_2() {
-        let info = weightless_info(
-            vec![4, 2],
-            vec![InstructionInfo::CopyMasked(CopyMaskedInstructionInfo {
-                input: 0,
-                output: 1,
-                indexes: vec![0, 2],
-            })],
-            None,
-        );
-
-        let gpu_model = GpuModel::from_info(&info).expect("Failed to create GPU model");
-        assert_eq!(gpu_model.as_f32_slice()[1].to_bits(), 2);
-        assert_eq!(GPU_MODEL_VERSION, 2);
+            ),
+            (
+                weightless(
+                    json!([2, 3]),
+                    json!({"type": "COPY", "input": 0, "output": 1, "internal_index": u64::MAX}),
+                    json!(null),
+                ),
+                |e| {
+                    matches!(
+                        e,
+                        E::InvalidInstruction {
+                            instruction_index: 0,
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                weightless(
+                    json!([2, 2]),
+                    json!({"type": "COPY", "input": 0, "output": 5, "internal_index": 0}),
+                    json!(null),
+                ),
+                |e| {
+                    matches!(
+                        e,
+                        E::InvalidInstruction {
+                            instruction_index: 0,
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                weightless(
+                    json!([2]),
+                    json!({"type": "ADD_ELEMENTWISE", "input": 0, "parameters": 3}),
+                    json!(null),
+                ),
+                |e| {
+                    matches!(
+                        e,
+                        E::MissingParameters {
+                            instruction_index: 0
+                        }
+                    )
+                },
+            ),
+            (
+                weightless(
+                    json!([2, 1]),
+                    json!({"type": "DOT", "input": 0, "output": 1, "weights": 0}),
+                    json!(null),
+                ),
+                |e| {
+                    matches!(
+                        e,
+                        E::MissingWeights {
+                            instruction_index: 0
+                        }
+                    )
+                },
+            ),
+            (
+                weightless(
+                    json!([2, 2]),
+                    json!({"type": "ATTENTION", "input": 0, "key": 0, "output": 1, "weights": 0}),
+                    json!(null),
+                ),
+                |e| matches!(e, E::UnsupportedInstruction { .. }),
+            ),
+            (
+                weightless(
+                    json!([2, u64::MAX, 2]),
+                    json!({"type": "COPY", "input": 0, "output": 2, "internal_index": 0}),
+                    json!(null),
+                ),
+                |e| matches!(e, E::ComputeBufferTooLarge { .. }),
+            ),
+            (
+                info(
+                    json!({"feature_size": 1, "buffer_sizes": [], "instructions": [], "weights": [], "bias": []}),
+                ),
+                |e| matches!(e, E::InvalidModelBinary { .. }),
+            ),
+        ];
+        for (model_info, check) in cases {
+            let err = GpuModel::from_info(&model_info).unwrap_err();
+            assert!(check(&err), "{:?}: {err}", model_info.instructions);
+        }
     }
 }

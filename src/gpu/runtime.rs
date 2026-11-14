@@ -151,8 +151,9 @@ impl PopulationEvaluator {
         let queue = context.queue().clone();
         let limits = device.limits();
 
-        let total_threads = (pack.n_candidates() * batch_size) as u32;
-        let workgroups = total_threads.div_ceil(WORKGROUP_SIZE);
+        let total_threads = (pack.n_candidates() as u64).saturating_mul(batch_size as u64);
+        let workgroups =
+            u32::try_from(total_threads.div_ceil(u64::from(WORKGROUP_SIZE))).unwrap_or(u32::MAX);
         if workgroups > limits.max_compute_workgroups_per_dimension {
             return Err(GpuRuntimeError::DispatchTooLarge {
                 workgroups,
@@ -161,11 +162,14 @@ impl PopulationEvaluator {
         }
 
         let model_bytes = pack.as_bytes().len() as u64;
-        let output_bytes =
-            (pack.n_candidates() * batch_size * pack.output_size() * std::mem::size_of::<f32>())
-                as u64;
+        let output_bytes = total_threads
+            .saturating_mul(pack.output_size() as u64)
+            .saturating_mul(4);
+        let input_bytes = (batch_size as u64)
+            .saturating_mul(pack.feature_size() as u64)
+            .saturating_mul(4);
         let max_binding = u64::from(limits.max_storage_buffer_binding_size);
-        for required in [model_bytes, output_bytes] {
+        for required in [model_bytes, input_bytes, output_bytes] {
             if required > max_binding {
                 return Err(GpuRuntimeError::BufferLimitExceeded {
                     required,
@@ -176,7 +180,6 @@ impl PopulationEvaluator {
 
         let pipeline = Self::build_pipeline(&device, &pack, batch_size)?;
 
-        let input_bytes = (batch_size * pack.feature_size() * std::mem::size_of::<f32>()) as u64;
         let model_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Population Models"),
             size: model_bytes,

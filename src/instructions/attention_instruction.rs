@@ -1,29 +1,15 @@
-//! Attention instruction implementation.
-//!
-//! Implements a softmax attention mechanism that computes:
-//! 1. Linear transform on key buffer: key @ weights.T + bias
-//! 2. Softmax normalization (numerically stable)
-//! 3. Element-wise multiplication with the query/value buffer
-
 use crate::errors::InstructionModelError;
 use crate::instructions::Instruction;
-use crate::utils::dot::{DotKernel, dot};
+use crate::utils::dot::Dense;
 
-/// Instruction that performs a softmax attention operation.
-///
-/// This instruction takes a query buffer and a key buffer, applies a linear
-/// transformation to the key, normalizes with softmax, and multiplies
-/// element-wise with the query buffer.
+/// `output = softmax(key @ W.T + b) * query`.
 #[derive(Clone)]
 pub struct AttentionInstruction {
     query_ptr: usize,
     key_ptr: usize,
     output_ptr: usize,
     data_size: usize,
-    key_size: usize,
-    weights: Vec<f32>,
-    bias: Vec<f32>,
-    kernel: DotKernel,
+    dense: Dense,
 }
 
 impl AttentionInstruction {
@@ -35,68 +21,12 @@ impl AttentionInstruction {
         weights: &[Vec<f32>],
         bias: &[f32],
     ) -> Self {
-        let key_size = weights.first().map_or(0, |row| row.len());
-        let mut flattened_weights = Vec::with_capacity(weights.len() * key_size);
-        for row in weights {
-            flattened_weights.extend_from_slice(row);
-        }
-
         Self {
             query_ptr,
             key_ptr,
             output_ptr,
             data_size,
-            key_size,
-            weights: flattened_weights,
-            bias: bias.to_vec(),
-            kernel: DotKernel::detect(),
-        }
-    }
-
-    #[inline(always)]
-    fn apply_linear_transform(&self, buffer: &mut [f32]) {
-        let key_ptr = unsafe { buffer.as_ptr().add(self.key_ptr) };
-        let output_ptr = unsafe { buffer.as_mut_ptr().add(self.output_ptr) };
-        let weights_ptr = self.weights.as_ptr();
-        let bias = &self.bias;
-        let row_stride = self.key_size;
-        let kernel = self.kernel;
-
-        for row in 0..self.data_size {
-            let row_weights_ptr = unsafe { weights_ptr.add(row * row_stride) };
-            let acc = dot(kernel, row_weights_ptr, key_ptr, row_stride)
-                + unsafe { *bias.get_unchecked(row) };
-            unsafe { *output_ptr.add(row) = acc };
-        }
-    }
-
-    #[inline(always)]
-    fn apply_softmax(&self, buffer: &mut [f32]) {
-        let output_start = self.output_ptr;
-        let output_slice = &mut buffer[output_start..output_start + self.data_size];
-
-        let max_val = output_slice
-            .iter()
-            .fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-
-        let mut sum = 0.0f32;
-        for val in output_slice.iter_mut() {
-            *val = (*val - max_val).exp();
-            sum += *val;
-        }
-
-        for val in output_slice.iter_mut() {
-            *val /= sum;
-        }
-    }
-
-    #[inline(always)]
-    fn apply_elementwise_multiply(&self, buffer: &mut [f32]) {
-        let query_start = self.query_ptr;
-        let output_start = self.output_ptr;
-
-        for i in 0..self.data_size {
-            buffer[output_start + i] *= buffer[query_start + i];
+            dense: Dense::new(weights, bias),
         }
     }
 }
@@ -110,10 +40,21 @@ impl Instruction for AttentionInstruction {
         self.data_size
     }
 
-    fn apply(&self, unified_computation_buffer: &mut [f32]) -> Result<(), InstructionModelError> {
-        self.apply_linear_transform(unified_computation_buffer);
-        self.apply_softmax(unified_computation_buffer);
-        self.apply_elementwise_multiply(unified_computation_buffer);
+    fn apply(&self, buffer: &mut [f32]) -> Result<(), InstructionModelError> {
+        let out = self.dense.forward(buffer, self.key_ptr, self.output_ptr);
+        // Subtracting the max keeps exp() from overflowing.
+        let max_val = out.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        let mut sum = 0.0f32;
+        for val in out.iter_mut() {
+            *val = (*val - max_val).exp();
+            sum += *val;
+        }
+        for val in out.iter_mut() {
+            *val /= sum;
+        }
+        for i in 0..self.data_size {
+            buffer[self.output_ptr + i] *= buffer[self.query_ptr + i];
+        }
         Ok(())
     }
 
@@ -122,15 +63,7 @@ impl Instruction for AttentionInstruction {
         weights: &[f32],
         bias: &[f32],
     ) -> Result<(), InstructionModelError> {
-        if weights.len() != self.weights.len() || bias.len() != self.bias.len() {
-            return Err(InstructionModelError::ThetaLengthMismatch {
-                expected: self.weights.len() + self.bias.len(),
-                got: weights.len() + bias.len(),
-            });
-        }
-        self.weights.copy_from_slice(weights);
-        self.bias.copy_from_slice(bias);
-        Ok(())
+        self.dense.set(weights, bias)
     }
 
     fn read_dense_params(
@@ -138,15 +71,7 @@ impl Instruction for AttentionInstruction {
         weights: &mut [f32],
         bias: &mut [f32],
     ) -> Result<(), InstructionModelError> {
-        if weights.len() != self.weights.len() || bias.len() != self.bias.len() {
-            return Err(InstructionModelError::ThetaLengthMismatch {
-                expected: self.weights.len() + self.bias.len(),
-                got: weights.len() + bias.len(),
-            });
-        }
-        weights.copy_from_slice(&self.weights);
-        bias.copy_from_slice(&self.bias);
-        Ok(())
+        self.dense.read(weights, bias)
     }
 
     fn clone_box(&self) -> Option<Box<dyn Instruction>> {
@@ -158,77 +83,41 @@ impl Instruction for AttentionInstruction {
 mod tests {
     use super::*;
 
-    const DELTA: f32 = 1e-5;
-
-    #[test]
-    fn test_attention_basic() {
-        // Simple 2-element attention
-        // Query: [1.0, 2.0], Key: [0.5, 0.5]
-        // Weights: identity matrix, Bias: [0.0, 0.0]
-        // Linear: [0.5, 0.5] -> Softmax: [0.5, 0.5] -> Multiply: [0.5, 1.0]
-        let mut buffer = vec![
-            1.0, 2.0, // query (input) at index 0
-            0.5, 0.5, // key at index 2
-            0.0, 0.0, // output at index 4
-        ];
-
-        let weights = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
-        let bias = vec![0.0, 0.0];
-
-        let instruction = AttentionInstruction::new(0, 2, 4, 2, &weights, &bias);
-        instruction.apply(&mut buffer).unwrap();
-
-        // After linear: [0.5, 0.5]
-        // After softmax: [0.5, 0.5] (equal values -> equal probabilities)
-        // After multiply: [0.5 * 1.0, 0.5 * 2.0] = [0.5, 1.0]
-        assert!((buffer[4] - 0.5).abs() < DELTA);
-        assert!((buffer[5] - 1.0).abs() < DELTA);
+    fn softmax(x: &[f32]) -> Vec<f32> {
+        let max = x.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        let e: Vec<f32> = x.iter().map(|v| (v - max).exp()).collect();
+        let sum: f32 = e.iter().sum();
+        e.iter().map(|v| v / sum).collect()
     }
 
     #[test]
-    fn test_attention_with_bias() {
-        let mut buffer = vec![
-            1.0, 1.0, // query
-            1.0, 1.0, // key
-            0.0, 0.0, // output
-        ];
-
-        let weights = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
-        let bias = vec![1.0, -1.0]; // bias shifts the values
-
-        let instruction = AttentionInstruction::new(0, 2, 4, 2, &weights, &bias);
-        instruction.apply(&mut buffer).unwrap();
-
-        // After linear: [1.0 + 1.0, 1.0 - 1.0] = [2.0, 0.0]
-        // Softmax([2.0, 0.0]): exp(2-2)/sum, exp(0-2)/sum = exp(0)/(exp(0)+exp(-2)), exp(-2)/(exp(0)+exp(-2))
-        let exp_0 = 1.0f32;
-        let exp_neg2 = (-2.0f32).exp();
-        let sum = exp_0 + exp_neg2;
-        let softmax_0 = exp_0 / sum;
-        let softmax_1 = exp_neg2 / sum;
-
-        // After multiply: [softmax_0 * 1.0, softmax_1 * 1.0]
-        assert!((buffer[4] - softmax_0).abs() < DELTA);
-        assert!((buffer[5] - softmax_1).abs() < DELTA);
+    fn computes_softmax_attention() {
+        let identity = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        // (query, key, bias): plain, biased, and large logits that would overflow exp() unshifted.
+        for (query, key, bias) in [
+            ([1.0, 2.0], [0.5, 0.5], [0.0, 0.0]),
+            ([1.0, 1.0], [1.0, 1.0], [1.0, -1.0]),
+            ([1.0, 1.0], [100.0, 100.0], [0.0, 0.0]),
+        ] {
+            let mut buffer = [query[0], query[1], key[0], key[1], 0.0, 0.0];
+            AttentionInstruction::new(0, 2, 4, 2, &identity, &bias)
+                .apply(&mut buffer)
+                .unwrap();
+            let p = softmax(&[key[0] + bias[0], key[1] + bias[1]]);
+            for i in 0..2 {
+                assert!((buffer[4 + i] - p[i] * query[i]).abs() < 1e-5);
+            }
+        }
     }
 
     #[test]
-    fn test_attention_softmax_numerical_stability() {
-        // Test with large values that could cause overflow without numerical stability
-        let mut buffer = vec![
-            1.0, 1.0, // query
-            100.0, 100.0, // key with large values
-            0.0, 0.0, // output
-        ];
-
-        let weights = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
-        let bias = vec![0.0, 0.0];
-
-        let instruction = AttentionInstruction::new(0, 2, 4, 2, &weights, &bias);
-        instruction.apply(&mut buffer).unwrap();
-
-        // Equal inputs -> softmax should give [0.5, 0.5]
-        assert!((buffer[4] - 0.5).abs() < DELTA);
-        assert!((buffer[5] - 0.5).abs() < DELTA);
+    fn key_aliasing_output_reads_original_key() {
+        let swap = vec![vec![0.0, 1.0], vec![1.0, 0.0]];
+        let mut buffer = [1.0, 1.0, 3.0, 1.0];
+        AttentionInstruction::new(0, 2, 2, 2, &swap, &[0.0, 0.0])
+            .apply(&mut buffer)
+            .unwrap();
+        let p = softmax(&[1.0, 3.0]);
+        assert!((buffer[2] - p[0]).abs() < 1e-6 && (buffer[3] - p[1]).abs() < 1e-6);
     }
 }

@@ -1,12 +1,8 @@
-//! Core instruction model for neural network inference.
-//!
-//! This module contains the main InstructionModel struct which orchestrates
-//! the execution of neural network inference through a sequence of instructions
-//! operating on computation buffers.
+//! [`InstructionModel`]: validated, executable form of an [`InstructionModelInfo`].
 
 use crate::errors::{InstructionModelError, InstructionModelResult, ParallelPredictResult};
 use crate::high_performance_execution_utils::ParallelExecutionGraph;
-use crate::instruction_model_info::InstructionModelInfo;
+use crate::instruction_model_info::{InstructionInfo, InstructionModelInfo};
 use crate::instruction_model_validation as validation;
 use crate::instructions::{Instruction, create_instruction};
 use crate::parallel_predict::{ParallelPredictOutput, PredictConfig, execute_parallel_predict};
@@ -21,9 +17,7 @@ thread_local! {
 /// own a copy of that slot's parameters.
 type BuiltInstructions = (Vec<Box<dyn Instruction>>, Vec<Vec<usize>>);
 
-/// Represents a model that is configured to follow optimized computation following a sequence of instructions.
-/// This model configuration can be represented via a JSON file that corresponds to an InstructionModelInfo record.
-/// The model is generally used as an inference computation engine generated from a trained neural network.
+/// Inference engine executing a validated instruction sequence over one unified buffer.
 pub struct InstructionModel {
     pub(crate) instructions: Vec<Box<dyn Instruction>>,
     pub(crate) feature_size: usize,
@@ -36,54 +30,31 @@ pub struct InstructionModel {
 }
 
 impl InstructionModel {
-    /// Creates a new InstructionModel from InstructionModelInfo.
+    /// Validates `instruction_model_info` (including its `validation_data`, if any) and builds the model.
     pub fn new(instruction_model_info: InstructionModelInfo) -> InstructionModelResult<Self> {
-        validation::validate_inputs(&instruction_model_info)?;
-
-        let computation_buffer_sizes = instruction_model_info.computation_buffer_sizes.clone();
-        let feature_size = Self::calculate_feature_size(&instruction_model_info)?;
-        validation::validate_feature_size(feature_size, &computation_buffer_sizes)?;
-
-        let mut computation_buffer_indexes = Vec::new();
-        let output_index_end = validation::calculate_computation_buffer_indexes(
-            &computation_buffer_sizes,
-            &mut computation_buffer_indexes,
+        let feature_size = validation::validate_inputs(&instruction_model_info)?;
+        let mut model = Self::with_layout(
+            instruction_model_info.computation_buffer_sizes.clone(),
+            Vec::new(),
+            feature_size,
         )?;
-        let output_index_start =
-            output_index_end - computation_buffer_sizes[computation_buffer_sizes.len() - 1];
-
-        validation::validate_required_memory(output_index_end)?;
+        validation::validate_required_memory(model.output_index_end)?;
 
         let (instructions, slot_owners) = Self::validate_and_create_instructions(
             &instruction_model_info,
-            &computation_buffer_indexes,
-            &computation_buffer_sizes,
+            &model.computation_buffer_indexes,
+            &model.computation_buffer_sizes,
         )?;
-
-        let layout = ParamLayout::from_info(&instruction_model_info)?;
-        let theta_binding = Some(ThetaBinding {
-            layout,
+        model.instructions = instructions;
+        model.theta_binding = Some(ThetaBinding {
+            layout: ParamLayout::from_info(&instruction_model_info)?,
             slot_owners,
         });
-
-        // Build parallel execution graph
-        let parallel_graph = ParallelExecutionGraph::build(
+        model.parallel_graph = ParallelExecutionGraph::build(
             &instruction_model_info.instructions,
-            computation_buffer_sizes.len(),
+            model.computation_buffer_sizes.len(),
         )?;
 
-        let mut model = InstructionModel {
-            instructions,
-            feature_size,
-            computation_buffer_sizes,
-            computation_buffer_indexes,
-            output_index_start,
-            output_index_end,
-            parallel_graph,
-            theta_binding,
-        };
-
-        // Validate with provided validation data
         if let Some(validation_data) = &instruction_model_info.validation_data {
             model.validate_model(
                 &validation_data.inputs,
@@ -95,7 +66,7 @@ impl InstructionModel {
         Ok(model)
     }
 
-    /// Creates a new InstructionModel for test purposes only.
+    /// Builds a model from pre-built instructions, skipping instruction validation (tests only).
     pub fn new_for_test(
         computation_buffer_sizes: Vec<usize>,
         instructions: Vec<Box<dyn Instruction>>,
@@ -105,31 +76,33 @@ impl InstructionModel {
             return Err(InstructionModelError::NoLayersProvided);
         }
         validation::validate_feature_size(feature_size, &computation_buffer_sizes)?;
+        Self::with_layout(computation_buffer_sizes, instructions, feature_size)
+    }
 
+    fn with_layout(
+        computation_buffer_sizes: Vec<usize>,
+        instructions: Vec<Box<dyn Instruction>>,
+        feature_size: usize,
+    ) -> InstructionModelResult<Self> {
         let mut computation_buffer_indexes = Vec::new();
         let output_index_end = validation::calculate_computation_buffer_indexes(
             &computation_buffer_sizes,
             &mut computation_buffer_indexes,
         )?;
-        let output_index_start =
-            output_index_end - computation_buffer_sizes[computation_buffer_sizes.len() - 1];
-
-        // For test models, create an empty parallel graph
-        let parallel_graph = ParallelExecutionGraph {
-            nodes: Vec::new(),
-            root_indices: Vec::new(),
-            is_parallelizable: false,
-            buffer_last_nodes: Vec::new(),
-        };
-
+        let output_size = computation_buffer_sizes[computation_buffer_sizes.len() - 1];
         Ok(InstructionModel {
             instructions,
             feature_size,
+            output_index_start: output_index_end.saturating_sub(output_size),
+            output_index_end,
             computation_buffer_sizes,
             computation_buffer_indexes,
-            output_index_start,
-            output_index_end,
-            parallel_graph,
+            parallel_graph: ParallelExecutionGraph {
+                nodes: Vec::new(),
+                root_indices: Vec::new(),
+                is_parallelizable: false,
+                buffer_last_nodes: Vec::new(),
+            },
             theta_binding: None,
         })
     }
@@ -147,7 +120,6 @@ impl InstructionModel {
         computation_buffer_sizes: &[usize],
     ) -> InstructionModelResult<BuiltInstructions> {
         let weights = &instruction_model_info.weights;
-        let bias = &instruction_model_info.bias;
         let parameters = instruction_model_info.parameters.as_deref().unwrap_or(&[]);
         let maps = instruction_model_info.maps.as_deref().unwrap_or(&[]);
 
@@ -159,76 +131,44 @@ impl InstructionModel {
         for (instruction_index, instruction_info) in
             instruction_model_info.instructions.iter().enumerate()
         {
-            // Validate input and output buffer indices
-            for &input_index in &instruction_info.get_inputs() {
-                validation::validate_buffer_index(
-                    "input",
-                    input_index,
-                    computation_buffer_sizes.len(),
-                )?;
-            }
-            validation::validate_buffer_index(
-                "output",
-                instruction_info.output(),
-                computation_buffer_sizes.len(),
-            )?;
-
-            let instruction = create_instruction(
+            instructions.push(create_instruction(
                 instruction_info,
                 computation_buffer_indexes,
                 computation_buffer_sizes,
                 weights,
-                bias,
+                &instruction_model_info.bias,
                 parameters,
                 maps,
-            )?;
+            )?);
 
-            // Mark resources as used
             match instruction_info {
-                crate::instruction_model_info::InstructionInfo::Dot(info) => {
-                    slot_owners[info.weights].push(instruction_index);
+                InstructionInfo::Dot(info) => slot_owners[info.weights].push(instruction_index),
+                InstructionInfo::Attention(info) => {
+                    slot_owners[info.weights].push(instruction_index)
                 }
-                crate::instruction_model_info::InstructionInfo::Attention(info) => {
-                    slot_owners[info.weights].push(instruction_index);
-                }
-                crate::instruction_model_info::InstructionInfo::ElemWiseAdd(info) => {
-                    used_parameters[info.parameters] = true;
-                }
-                crate::instruction_model_info::InstructionInfo::ElemWiseMul(info) => {
-                    used_parameters[info.parameters] = true;
-                }
-                crate::instruction_model_info::InstructionInfo::ClipElementwise(info) => {
-                    if let Some(idx) = info.parameters_min {
-                        used_parameters[idx] = true;
-                    }
-                    if let Some(idx) = info.parameters_max {
+                InstructionInfo::ElemWiseAdd(info) => used_parameters[info.parameters] = true,
+                InstructionInfo::ElemWiseMul(info) => used_parameters[info.parameters] = true,
+                InstructionInfo::ClipElementwise(info) => {
+                    for idx in [info.parameters_min, info.parameters_max]
+                        .into_iter()
+                        .flatten()
+                    {
                         used_parameters[idx] = true;
                     }
                 }
-                crate::instruction_model_info::InstructionInfo::MapTransform(info) => {
-                    used_maps[info.map] = true;
-                }
+                InstructionInfo::MapTransform(info) => used_maps[info.map] = true,
                 _ => {}
             }
-
-            instructions.push(instruction);
         }
 
-        // Check for unused resources
-        for (i, owners) in slot_owners.iter().enumerate() {
-            if owners.is_empty() {
-                return Err(InstructionModelError::UnusedWeights { index: i });
-            }
+        if let Some(index) = slot_owners.iter().position(Vec::is_empty) {
+            return Err(InstructionModelError::UnusedWeights { index });
         }
-        for (i, &used) in used_parameters.iter().enumerate() {
-            if !used {
-                return Err(InstructionModelError::UnusedParameters { index: i });
-            }
+        if let Some(index) = used_parameters.iter().position(|used| !used) {
+            return Err(InstructionModelError::UnusedParameters { index });
         }
-        for (i, &used) in used_maps.iter().enumerate() {
-            if !used {
-                return Err(InstructionModelError::UnusedMap { index: i });
-            }
+        if let Some(index) = used_maps.iter().position(|used| !used) {
+            return Err(InstructionModelError::UnusedMap { index });
         }
 
         Ok((instructions, slot_owners))
