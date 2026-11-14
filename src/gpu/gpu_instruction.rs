@@ -1,4 +1,4 @@
-//! GPU instruction encoding for neural network inference.
+//! 8-word GPU instruction encoding shared with the WGSL interpreter.
 
 use crate::activation::Activation;
 
@@ -78,7 +78,6 @@ impl GpuInstruction {
     pub const SIZE_BYTES: usize = 32;
     pub const SIZE_U32S: usize = 8;
 
-    /// Create a DOT instruction.
     pub fn dot(
         input_ptr: u32,
         output_ptr: u32,
@@ -99,7 +98,6 @@ impl GpuInstruction {
         }
     }
 
-    /// Create an ACTIVATION instruction.
     pub fn activation(ptr: u32, size: u32, activation: Activation) -> Self {
         Self {
             opcode: opcodes::ACTIVATION,
@@ -113,7 +111,6 @@ impl GpuInstruction {
         }
     }
 
-    /// Create an ELEM_WISE_ADD instruction.
     pub fn elem_wise_add(ptr: u32, size: u32, params_offset: u32) -> Self {
         Self {
             opcode: opcodes::ELEM_WISE_ADD,
@@ -127,7 +124,6 @@ impl GpuInstruction {
         }
     }
 
-    /// Create an ELEM_WISE_MUL instruction.
     pub fn elem_wise_mul(ptr: u32, size: u32, params_offset: u32) -> Self {
         Self {
             opcode: opcodes::ELEM_WISE_MUL,
@@ -141,7 +137,6 @@ impl GpuInstruction {
         }
     }
 
-    /// Create a COPY instruction.
     pub fn copy(src_ptr: u32, dst_ptr: u32, size: u32) -> Self {
         Self {
             opcode: opcodes::COPY,
@@ -155,8 +150,6 @@ impl GpuInstruction {
         }
     }
 
-    /// Create a COPY_MASKED instruction.
-    ///
     /// `pointers_offset` locates a list of `count` bitcast-u32 absolute
     /// compute-buffer indexes in the params region; the interpreter gathers
     /// `output[i] = compute_buffer[pointers[i]]`.
@@ -173,8 +166,6 @@ impl GpuInstruction {
         }
     }
 
-    /// Create a CLIP_ELEMENTWISE instruction (in place).
-    ///
     /// `min_offset`/`max_offset` are params-region offsets of the per-element
     /// bound vectors; `None` encodes as [`CLIP_BOUND_NONE`].
     pub fn clip_elementwise(
@@ -195,8 +186,6 @@ impl GpuInstruction {
         }
     }
 
-    /// Create an ELEM_WISE_BUFFERS_ADD instruction.
-    ///
     /// `pointers_offset` locates a list of `input_count` bitcast-u32 absolute
     /// compute-buffer indexes in the params region — one per input buffer.
     pub fn elem_wise_buffers_add(
@@ -217,8 +206,6 @@ impl GpuInstruction {
         }
     }
 
-    /// Create an ELEM_WISE_BUFFERS_MUL instruction (same encoding as the
-    /// add variant).
     pub fn elem_wise_buffers_mul(
         output_ptr: u32,
         size: u32,
@@ -237,8 +224,6 @@ impl GpuInstruction {
         }
     }
 
-    /// Create a MULTIPLY_BUFFER_HEADS instruction.
-    ///
     /// `out[i] = data[i] * heads[i / (data_size / num_heads)]`.
     pub fn multiply_buffer_heads(
         data_ptr: u32,
@@ -259,7 +244,6 @@ impl GpuInstruction {
         }
     }
 
-    /// Create an ADD_BUFFER_HEADS instruction (same encoding as multiply).
     pub fn add_buffer_heads(
         data_ptr: u32,
         output_ptr: u32,
@@ -279,8 +263,6 @@ impl GpuInstruction {
         }
     }
 
-    /// Create a REDUCE_SUM instruction: sums `input_size` elements at
-    /// `input_ptr` into the single scalar at `output_ptr`.
     pub fn reduce_sum(input_ptr: u32, output_ptr: u32, input_size: u32) -> Self {
         Self {
             opcode: opcodes::REDUCE_SUM,
@@ -294,8 +276,7 @@ impl GpuInstruction {
         }
     }
 
-    /// Convert to f32 array (for packing into single f32 buffer).
-    /// Each u32 field is bitcast to f32.
+    /// Fields bitcast to f32 for packing into the model blob.
     pub fn to_f32_array(&self) -> [f32; Self::SIZE_U32S] {
         [
             f32::from_bits(self.opcode),

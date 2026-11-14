@@ -6,13 +6,7 @@ use crate::activation::Activation;
 
 use super::weights::WeightId;
 
-/// A constant operand for element-wise graph ops ([`add_const`], [`mul_const`],
-/// [`clip`]), resolved at plan time into a `parameters` slot of the target
-/// buffer's size. Constants are NOT part of the flat θ vector.
-///
-/// [`add_const`]: super::Graph::add_const
-/// [`mul_const`]: super::Graph::mul_const
-/// [`clip`]: super::Graph::clip
+/// Constant operand of `add_const`/`mul_const`/`clip`, stored as a `parameters` slot.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Constant {
     /// Broadcast a single value across the whole buffer.

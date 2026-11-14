@@ -1,11 +1,4 @@
-//! Flat parameter layout: the offset table mapping a flat `theta: &[f32]` onto
-//! the model's weight/bias storage.
-//!
-//! The canonical θ (source) order is: for each weight slot, in slot order, its
-//! row-major `[out × in]` weight run followed by its `[out]` bias run. Shared
-//! slots appear exactly once. This order is also how [`crate::gpu::GpuModel`]
-//! serializes its weights region, so a flat θ doubles as a GPU weights payload
-//! with no repacking.
+//! [`ParamLayout`]: offsets between a flat θ and a model's weight/bias storage.
 
 use crate::errors::InstructionModelError;
 use crate::instruction_model_info::InstructionModelInfo;
@@ -44,8 +37,12 @@ pub struct JaggedParams {
     pub bias: Vec<Vec<f32>>,
 }
 
-/// The complete offset table for a model's dense parameters, plus the shapes
-/// needed to reshape the flat buffers back into the served jagged format.
+/// Offset table between a flat parameter vector θ and a model's dense weights.
+///
+/// θ order (public contract): for each weight slot in slot order (a graph's first-seen
+/// emission order; shared slots once), the row-major `[out × in]` weights, then the
+/// `[out]` bias. `GpuModel`'s weights region uses the same order, so θ doubles as a GPU
+/// weights payload. Constants (`parameters`) and maps are not part of θ.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParamLayout {
     /// One weight run + one bias run per weight slot, in slot order.

@@ -1,22 +1,6 @@
-//! Evolution-strategies training toolkit.
-//!
-//! Everything a black-box training loop needs, with zero extra
-//! dependencies:
-//!
-//! - [`EsOptimizer`] — OpenAI-style ES: mirrored sampling, centered-rank
-//!   fitness shaping, SGD with momentum, fully deterministic per
-//!   `(seed, step, pair)`.
-//! - [`GaussianStream`] / [`perturbation_seed`] / [`fill_perturbation`] —
-//!   the counter-based noise primitives, exposed so external evaluators
-//!   (e.g. GPU-side reconstruction) can regenerate any perturbation.
-//! - [`cosine_anneal`] — σ / learning-rate decay schedule.
-//!
-//! Candidates flow into models either via
-//! [`InstructionModel::apply_theta`](crate::InstructionModel::apply_theta)
-//! (in-place CPU mutation) or
-//! [`PopulationPack::write_candidate`](crate::gpu::PopulationPack::write_candidate)
-//! (zero-repack GPU packing); both consume the same canonical flat-θ order
-//! produced by [`ModelGraph::weights_map`](crate::graph::ModelGraph::weights_map).
+//! Evolution strategies: [`EsOptimizer`], deterministic counter-based noise (exposed so external
+//! evaluators can regenerate perturbations) and [`cosine_anneal`]. Candidates are θ vectors for
+//! `InstructionModel::apply_theta` or `PopulationPack::write_candidate`.
 
 pub mod noise;
 pub mod optimizer;

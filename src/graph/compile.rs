@@ -7,24 +7,17 @@ use crate::params::ParamLayout;
 use super::ModelGraph;
 use super::plan::{Plan, plan};
 
-/// Returns the canonical flat-θ ↔ model offset table for `graph` without
-/// needing any weight data.
+/// The graph's [`ParamLayout`], derived from structure alone.
 pub fn weights_map(graph: &ModelGraph) -> Result<ParamLayout, GraphError> {
     Ok(plan(graph)?.layout)
 }
 
-/// Compiles `graph` with a flat parameter vector into a runnable
-/// [`InstructionModelInfo`].
-///
-/// `theta` is scattered through the graph's [`ParamLayout`] into the served
-/// jagged `weights`/`bias`; `theta.len()` must equal the layout's `total`.
+/// Compiles `graph` with `theta` (length = layout `total`) into a runnable [`InstructionModelInfo`].
 pub fn compile(graph: &ModelGraph, theta: &[f32]) -> Result<InstructionModelInfo, GraphError> {
     assemble(plan(graph)?, theta)
 }
 
-/// Compiles `graph` with all parameters zeroed — a template for workflows that
-/// immediately overwrite θ in place
-/// ([`InstructionModel::apply_theta`](crate::InstructionModel::apply_theta)).
+/// [`compile`] with a zero θ, for workflows that overwrite θ in place afterwards.
 pub fn compile_zeroed(graph: &ModelGraph) -> Result<InstructionModelInfo, GraphError> {
     let plan = plan(graph)?;
     let theta = vec![0.0f32; plan.layout.total];

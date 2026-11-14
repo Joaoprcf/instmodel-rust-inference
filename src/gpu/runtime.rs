@@ -1,9 +1,5 @@
-//! wgpu-backed evaluation host (`gpu-runtime` feature).
-//!
-//! [`GpuContext`] owns the adapter/device/queue; [`PopulationEvaluator`]
-//! wraps a [`PopulationPack`] with persistent GPU buffers and a prebuilt
-//! pipeline so an ES loop is: write candidates → [`evaluate`] → fitness →
-//! repeat, with one dispatch and one synchronous readback per step.
+//! wgpu host (`gpu-runtime` feature): [`GpuContext`] owns the device; [`PopulationEvaluator`]
+//! runs a [`PopulationPack`] with persistent buffers, one dispatch and one readback per step.
 
 use pollster::FutureExt;
 

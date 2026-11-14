@@ -1,16 +1,5 @@
-//! Zero-repack population packing for GPU evolution workloads.
-//!
-//! A [`PopulationPack`] tiles one serialized [`GpuModel`] blob `n` times into
-//! a single contiguous host buffer — one full model per candidate, each at
-//! `candidate * model_stride()` f32s. Every candidate shares the header,
-//! instructions, and constant parameters; only its weights region differs.
-//!
-//! Because the weights region is byte-identical to the canonical flat-θ
-//! order (verified at construction — see
-//! [`GpuModelError::PackedThetaOrderViolation`]), writing a candidate is a
-//! pure memcpy of an optimizer's parameter vector: no per-write
-//! re-serialization, no repacking. On the GPU side, thread `c` simply calls
-//! `predict(c * model_stride, ...)` against the uploaded blob.
+//! [`PopulationPack`]: one [`GpuModel`] blob per candidate, back to back; candidate `c`
+//! starts at `c * model_stride()` and only its weights region (θ order) differs.
 
 use crate::gpu::errors::{GpuModelError, PopulationError};
 use crate::gpu::gpu_model::GpuModel;
@@ -19,8 +8,7 @@ use crate::instruction_model_info::InstructionModelInfo;
 use crate::params::ParamLayout;
 use std::ops::Range;
 
-/// A host-side buffer holding `n` copies of one GPU model, with per-candidate
-/// mutable weights regions in canonical flat-θ order.
+/// Host buffer of `n` copies of one GPU model with per-candidate weights.
 #[derive(Debug, Clone)]
 pub struct PopulationPack {
     data: Vec<f32>,
@@ -35,14 +23,8 @@ pub struct PopulationPack {
 }
 
 impl PopulationPack {
-    /// Builds a pack of `n_candidates` copies of the model described by
-    /// `info`.
-    ///
-    /// Construction verifies the zero-repack invariant — the template's
-    /// weights region must be byte-identical to
-    /// [`ParamLayout::flatten_from_info`] — so a later
-    /// [`write_candidate`](Self::write_candidate) is guaranteed to be a plain
-    /// memcpy of a canonical θ vector.
+    /// Packs `n_candidates` copies of `info`, verifying its weights region is byte-identical
+    /// to θ order so candidate writes are plain memcpys.
     pub fn new(info: &InstructionModelInfo, n_candidates: usize) -> Result<Self, GpuModelError> {
         if n_candidates == 0 {
             return Err(GpuModelError::EmptyPopulation);
@@ -64,9 +46,7 @@ impl PopulationPack {
         })
     }
 
-    /// Compiles `graph` with zeroed parameters and builds a pack from it —
-    /// the natural entry point for evolution loops that overwrite every
-    /// candidate before the first dispatch.
+    /// [`Self::new`] on `graph` compiled with a zero θ.
     pub fn from_graph(graph: &ModelGraph, n_candidates: usize) -> Result<Self, PopulationError> {
         let info = graph.compile_zeroed()?;
         Ok(Self::new(&info, n_candidates)?)
@@ -127,8 +107,7 @@ impl PopulationPack {
         Ok(())
     }
 
-    /// Overwrites `candidate`'s weights region with `theta` (canonical flat
-    /// order). A pure memcpy.
+    /// Overwrites `candidate`'s weights with `theta`.
     pub fn write_candidate(
         &mut self,
         candidate: usize,
@@ -140,8 +119,7 @@ impl PopulationPack {
         Ok(())
     }
 
-    /// Like [`write_candidate`](Self::write_candidate) for f64 optimizer
-    /// state; each value is narrowed to f32 during the copy.
+    /// [`Self::write_candidate`] from f64 values (narrowed to f32).
     pub fn write_candidate_f64(
         &mut self,
         candidate: usize,
@@ -155,55 +133,47 @@ impl PopulationPack {
         Ok(())
     }
 
-    /// Reads back `candidate`'s weights region (canonical flat order).
+    /// Reads `candidate`'s weights.
     pub fn candidate_theta(&self, candidate: usize) -> Result<&[f32], GpuModelError> {
         let range = self.candidate_weights_range(candidate)?;
         Ok(&self.data[range])
     }
 
-    /// The full packed buffer: `n_candidates` model blobs back to back,
-    /// ready to upload as one storage buffer.
+    /// All candidate blobs, ready to upload as one storage buffer.
     pub fn host_blob(&self) -> &[f32] {
         &self.data
     }
 
-    /// The packed buffer as raw bytes.
     pub fn as_bytes(&self) -> &[u8] {
         bytemuck::cast_slice(&self.data)
     }
 
-    /// Size of one model blob in f32s; candidate `c` starts at
-    /// `c * model_stride()`.
+    /// One blob's length in f32s.
     pub fn model_stride(&self) -> usize {
         self.model_stride
     }
 
-    /// Flat parameter count per candidate.
+    /// θ length per candidate.
     pub fn theta_len(&self) -> usize {
         self.theta_len
     }
 
-    /// Number of candidates in the pack.
     pub fn n_candidates(&self) -> usize {
         self.n_candidates
     }
 
-    /// Model input size.
     pub fn feature_size(&self) -> usize {
         self.feature_size
     }
 
-    /// Model output size.
     pub fn output_size(&self) -> usize {
         self.output_size
     }
 
-    /// Output start index within a candidate's compute buffer.
     pub fn output_start(&self) -> usize {
         self.output_start
     }
 
-    /// Required compute buffer size per prediction.
     pub fn compute_buffer_size(&self) -> usize {
         self.compute_buffer_size
     }

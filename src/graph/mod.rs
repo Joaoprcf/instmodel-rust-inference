@@ -1,20 +1,5 @@
-//! Weightless graph authoring for instruction models.
-//!
-//! Declare an architecture once as a small DAG — structure only, no weight
-//! data — then compile it with any flat parameter vector θ:
-//!
-//! - [`ModelGraph::weights_map`] returns the [`ParamLayout`]: the canonical
-//!   flat-θ ↔ model offset table (per weight slot in first-seen order, a
-//!   row-major `[out × in]` weight run then the `[out]` bias run).
-//! - [`ModelGraph::compile`] scatters θ through that layout into a runnable
-//!   [`InstructionModelInfo`].
-//! - [`ModelGraph::to_model`] builds the executable [`InstructionModel`]
-//!   directly.
-//!
-//! Reusing a [`WeightId`] (via [`Graph::dense_shared`] /
-//! [`Graph::attention_shared`]) shares one weight tensor across ops: a single
-//! θ slot referenced by several instructions. Constants ([`Constant`]) and
-//! maps become `parameters`/`maps` slots and are NOT part of θ.
+//! Weightless graph authoring: declare a DAG once, then compile it with any flat θ
+//! (layout: [`ParamLayout`]). `*_shared` ops reuse one [`WeightId`] slot.
 //!
 //! # Example
 //!
@@ -256,20 +241,17 @@ pub struct ModelGraph {
 }
 
 impl ModelGraph {
-    /// The canonical flat-θ ↔ model offset table, without weight data.
+    /// See [`weights_map`].
     pub fn weights_map(&self) -> Result<ParamLayout, GraphError> {
         compile::weights_map(self)
     }
 
-    /// Compiles the graph with flat parameters `theta` into a runnable
-    /// [`InstructionModelInfo`].
+    /// See [`compile`].
     pub fn compile(&self, theta: &[f32]) -> Result<InstructionModelInfo, GraphError> {
         compile::compile(self, theta)
     }
 
-    /// Compiles the graph with all parameters zeroed — a template for
-    /// workflows that immediately overwrite θ in place
-    /// ([`InstructionModel::apply_theta`]).
+    /// See [`compile_zeroed`].
     pub fn compile_zeroed(&self) -> Result<InstructionModelInfo, GraphError> {
         compile::compile_zeroed(self)
     }

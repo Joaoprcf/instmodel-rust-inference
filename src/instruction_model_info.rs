@@ -1,25 +1,18 @@
-//! Data structures for instruction model configuration.
-//!
-//! This module contains the InstructionModelInfo structure and related types
-//! that define how neural network inference should be executed through a sequence
-//! of instructions operating on computation buffers.
+//! Serde types for the instruction-model JSON format.
 
 use crate::activation::Activation;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Validation data required for model evaluation.
+/// Input rows and expected outputs checked when the model is built.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationData {
-    /// List of input data where each item is a list of feature values.
     pub inputs: Vec<Vec<f32>>,
-    /// List of expected outputs corresponding to the input data.
     #[serde(rename = "expected_outputs")]
     pub expected_outputs: Vec<Vec<f32>>,
 }
 
-/// Information required to configure a model instruction.
-/// This is a polymorphic type that can represent different kinds of instructions.
+/// One instruction, tagged by its JSON `"type"`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum InstructionInfo {
@@ -54,7 +47,7 @@ pub enum InstructionInfo {
 }
 
 impl InstructionInfo {
-    /// Returns the list of input buffer indices required for this instruction.
+    /// Buffer indices read by this instruction.
     pub fn get_inputs(&self) -> Vec<usize> {
         match self {
             InstructionInfo::Dot(info) => vec![info.input],
@@ -74,17 +67,16 @@ impl InstructionInfo {
         }
     }
 
-    /// Returns the output buffer index for this instruction.
-    /// For instructions operating in place, the output index defaults to the input index.
+    /// Buffer index written (the input buffer for in-place instructions).
     pub fn output(&self) -> usize {
         match self {
             InstructionInfo::Dot(info) => info.output,
             InstructionInfo::Copy(info) => info.output,
             InstructionInfo::CopyMasked(info) => info.output,
-            InstructionInfo::Activation(info) => info.input, // In-place operation
-            InstructionInfo::ElemWiseAdd(info) => info.input, // In-place operation
-            InstructionInfo::ElemWiseMul(info) => info.input, // In-place operation
-            InstructionInfo::ClipElementwise(info) => info.input, // In-place operation
+            InstructionInfo::Activation(info) => info.input,
+            InstructionInfo::ElemWiseAdd(info) => info.input,
+            InstructionInfo::ElemWiseMul(info) => info.input,
+            InstructionInfo::ClipElementwise(info) => info.input,
             InstructionInfo::MapTransform(info) => info.output,
             InstructionInfo::ElemWiseBuffersAdd(info) => info.output,
             InstructionInfo::ElemWiseBuffersMul(info) => info.output,
@@ -95,8 +87,7 @@ impl InstructionInfo {
         }
     }
 
-    /// Returns true if this instruction can write to a partial region of its output buffer.
-    /// These instructions use internal_index or similar mechanisms to write to specific offsets.
+    /// Whether the instruction may write only part of its output buffer.
     pub fn supports_partial_write(&self) -> bool {
         matches!(
             self,
@@ -107,207 +98,149 @@ impl InstructionInfo {
     }
 }
 
-/// Represents a dot product operation instruction.
+/// Dense layer: `output = activation(W @ input + b)`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DotInstructionInfo {
-    /// Input index of the target buffer.
     pub input: usize,
-    /// Output index of the target buffer.
     pub output: usize,
-    /// Weights index targeting the weights of a given layer.
     pub weights: usize,
-    /// Activation function (may be null).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activation: Option<Activation>,
 }
 
-/// Represents a sliced data copy operation instruction.
+/// Copies the whole input buffer into `output[internal_index..]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CopyInstructionInfo {
-    /// Input index of the target buffer.
     pub input: usize,
-    /// Output index of the target buffer.
     pub output: usize,
-    /// Start index of the target output layer.
     pub internal_index: usize,
 }
 
-/// Represents an instruction to copy data from specific indexed positions.
+/// Gathers `input[indexes[i]]` into `output[i]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CopyMaskedInstructionInfo {
-    /// Input index of the target buffer.
     pub input: usize,
-    /// Output index of the target buffer.
     pub output: usize,
-    /// List of indexes to copy.
     pub indexes: Vec<usize>,
 }
 
-/// Represents a single activation function operation instruction.
+/// In-place activation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivationInstructionInfo {
-    /// Input index of the target buffer. Same as the output because it operates in place.
     pub input: usize,
-    /// Activation function (should not be null).
     pub activation: Activation,
 }
 
-/// Represents an element-wise addition operation instruction.
+/// In-place `input += parameters[parameters]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ElemWiseAddInstructionInfo {
-    /// Input index of the target buffer.
     pub input: usize,
-    /// Number of parameters for the element-wise operation.
     pub parameters: usize,
 }
 
-/// Represents an element-wise multiplication operation instruction.
+/// In-place `input *= parameters[parameters]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ElemWiseMulInstructionInfo {
-    /// Input index of the target buffer.
     pub input: usize,
-    /// Number of parameters for the element-wise operation.
     pub parameters: usize,
 }
 
-/// Represents an element-wise clip (clamp) operation instruction.
-///
-/// Operates in place on `input`, applying an element-wise lower bound
-/// (`max(x, parameters[parameters_min])`) and/or upper bound
-/// (`min(x, parameters[parameters_max])`). Both bounds are optional; a missing
-/// bound leaves that side unconstrained. Mirrors the reference `CLIP_ELEMENTWISE`.
+/// In-place clamp by optional per-element bounds (parameter vector indices); a missing bound is unconstrained.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipElementwiseInstructionInfo {
-    /// Input index of the target buffer (operates in place).
     pub input: usize,
-    /// Optional parameters index providing the element-wise lower bound.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parameters_min: Option<usize>,
-    /// Optional parameters index providing the element-wise upper bound.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parameters_max: Option<usize>,
 }
 
-/// Represents a map transform operation instruction.
+/// Writes `maps[map][round(input[internal_input_index])]` (or `default`) to `output[internal_output_index..+size]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MapTransformInstructionInfo {
-    /// Input index of the target buffer.
     pub input: usize,
-    /// Output index of the target buffer.
     pub output: usize,
-    /// Target internal index for the input buffer.
     pub internal_input_index: usize,
-    /// Target internal index for the output buffer.
     pub internal_output_index: usize,
-    /// Map index for the instruction.
     pub map: usize,
-    /// Size parameter for the instruction.
     pub size: usize,
-    /// Default value list when the map key is not found.
     #[serde(rename = "default")]
     pub default_value: Vec<f32>,
 }
 
-/// Represents an element-wise addition operation that sums multiple input DataBuffers.
+/// Element-wise sum of two or more equally sized buffers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ElemWiseBuffersAddInstructionInfo {
-    /// List of input buffer indices.
     pub input: Vec<usize>,
-    /// Output buffer index.
     pub output: usize,
 }
 
-/// Represents an element-wise multiplication operation that multiplies multiple input DataBuffers.
+/// Element-wise product of two or more equally sized buffers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ElemWiseBuffersMulInstructionInfo {
-    /// List of input buffer indices.
     pub input: Vec<usize>,
-    /// Output buffer index.
     pub output: usize,
 }
 
-/// Represents a head-wise multiplication operation where a data buffer is multiplied
-/// by a smaller heads buffer, broadcasting each head value across its segment.
+/// `input = [data, heads]`; multiplies each `data.len() / heads.len()` segment by its head value.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MultiplyBufferHeadsInstructionInfo {
-    /// List of input buffer indices: [data_buffer_idx, heads_buffer_idx].
     pub input: Vec<usize>,
-    /// Output buffer index.
     pub output: usize,
 }
 
-/// Represents a head-wise addition operation where a smaller heads buffer is added
-/// to a data buffer, broadcasting each head value across its segment.
+/// `input = [data, heads]`; adds each head value to its `data.len() / heads.len()` segment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddBufferHeadsInstructionInfo {
-    /// List of input buffer indices: [data_buffer_idx, heads_buffer_idx].
     pub input: Vec<usize>,
-    /// Output buffer index.
     pub output: usize,
 }
 
-/// Represents a reduce sum operation that sums all values in an input buffer.
+/// Sum of the input buffer into `output[0]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReduceSumInstructionInfo {
-    /// Input buffer index.
     pub input: usize,
-    /// Output buffer index.
     pub output: usize,
 }
 
-/// Represents an attention operation instruction.
+/// `output = softmax(key @ W.T + b) * input`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttentionInstructionInfo {
-    /// Input buffer index (query/value buffer).
     pub input: usize,
-    /// Key buffer index.
     pub key: usize,
-    /// Output buffer index.
     pub output: usize,
-    /// Weights index targeting the weights of a given layer.
     pub weights: usize,
 }
 
-/// Instruction model information required to build the computation graph.
-/// At least one of [features, feature_size] must be defined. When both are provided, their size must match.
+/// A model in the JSON format. At least one of `features`/`feature_size` is required; if both, they must agree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstructionModelInfo {
-    /// List of input features.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub features: Option<Vec<String>>,
-    /// Size of the feature vector.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub feature_size: Option<usize>,
-    /// List of the computation buffer sizes.
     #[serde(rename = "buffer_sizes")]
     pub computation_buffer_sizes: Vec<usize>,
-    /// List of instructions to compute the model output.
     pub instructions: Vec<InstructionInfo>,
-    /// Weights as a list of matrices (each with shape: [output_size, input_size]).
+    /// Matrices shaped `[output_size][input_size]`; `bias[i]` pairs with `weights[i]`.
     pub weights: Vec<Vec<Vec<f32>>>,
-    /// Biases as a list of vectors (each with shape: [output_size]).
     pub bias: Vec<Vec<f32>>,
-    /// Parameters as a list of vectors (each with shape: [output_size]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parameters: Option<Vec<Vec<f32>>>,
-    /// Mapping structures as a list of dictionaries (key: id, value: list of floats).
+    /// MAP_TRANSFORM tables keyed by the integer id as a string.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub maps: Option<Vec<HashMap<String, Vec<f32>>>>,
-    /// Data used to validate the model.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub validation_data: Option<ValidationData>,
 }
 
 impl InstructionModelInfo {
-    /// Creates a new builder for InstructionModelInfo.
     pub fn builder() -> InstructionModelInfoBuilder {
         InstructionModelInfoBuilder::new()
     }
 
-    /// Creates instruction model information from the given logistic regression model data.
-    ///
-    /// The keys in the decision_function map (except "constant") represent feature weights,
-    /// and the "constant" key represents the bias term.
+    /// Sigmoid DOT model from `{feature: weight, "constant": bias}`; `feature_order`, if given,
+    /// must be a permutation of the features (default: sorted).
     pub fn from_logistic_regression_model(
         decision_function: HashMap<String, f64>,
         feature_order: Option<Vec<String>>,
