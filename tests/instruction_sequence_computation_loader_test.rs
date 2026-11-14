@@ -1,5 +1,3 @@
-//! Tests for instruction sequence computation loading from JSON.
-
 use instmodel_inference::{InstructionModel, InstructionModelInfo};
 use std::collections::HashMap;
 
@@ -78,68 +76,49 @@ const JSON_MODEL_CONFIG: &str = r#"
 "#;
 
 #[test]
-fn create_instruction_model_from_json() {
-    let instruction_model_info: InstructionModelInfo =
-        serde_json::from_str(JSON_MODEL_CONFIG).expect("Failed to parse JSON");
-
-    // Verify basic structure
-    assert_eq!(instruction_model_info.features.as_ref().unwrap().len(), 2);
-    assert_eq!(instruction_model_info.computation_buffer_sizes.len(), 5);
-    assert_eq!(instruction_model_info.instructions.len(), 8);
-    assert!(!instruction_model_info.weights.is_empty());
-    assert!(!instruction_model_info.bias.is_empty());
-    assert_eq!(instruction_model_info.weights.len(), 2);
-    assert_eq!(instruction_model_info.bias.len(), 2);
-    assert!(instruction_model_info.parameters.is_some());
-    assert_eq!(instruction_model_info.parameters.as_ref().unwrap().len(), 2);
-    assert!(instruction_model_info.maps.is_some());
-    assert_eq!(instruction_model_info.maps.as_ref().unwrap().len(), 1);
-
-    // Verify weights structure
-    assert_eq!(instruction_model_info.weights[0].len(), 2);
-    assert_eq!(instruction_model_info.weights[1].len(), 1);
-    assert_eq!(instruction_model_info.bias[0].len(), 2);
-    assert_eq!(instruction_model_info.bias[1].len(), 1);
-    assert_eq!(
-        instruction_model_info.parameters.as_ref().unwrap()[0].len(),
-        1
-    );
-    assert_eq!(
-        instruction_model_info.parameters.as_ref().unwrap()[1].len(),
-        2
-    );
-    assert_eq!(instruction_model_info.maps.as_ref().unwrap()[0].len(), 2);
+fn json_model_predicts_every_instruction_type() {
+    let info: InstructionModelInfo = serde_json::from_str(JSON_MODEL_CONFIG).unwrap();
+    let model = InstructionModel::new(info).unwrap();
+    // MUL scales the input to [-0.5 * x0, 0.6 * x1]; COPY_MASKED writes it reversed into the
+    // output, then MAP_TRANSFORM overwrites output[1] with map[round(input[0])] or the default.
+    assert_eq!(model.predict(&[1.0, -1.0]).unwrap(), vec![-0.6, -5.0, 0.0]);
+    assert_eq!(model.predict(&[-464.0, 1.0]).unwrap(), vec![0.6, 0.5, 0.0]);
+    // Upstream branch: sigmoid(DOT(relu(DOT(x)))) + 0.5 lands in buffer 3.
+    let mut buffer = vec![0.0; model.required_memory()];
+    buffer[..2].copy_from_slice(&[1.0, -1.0]);
+    model.predict_with_buffer(&mut buffer).unwrap();
+    assert!((buffer[6] - (1.0 / (1.0 + (-2.875f32).exp()) + 0.5)).abs() < 1e-6);
 }
 
 #[test]
-fn test_basic_model_creation() {
-    let instruction_model_info: InstructionModelInfo =
-        serde_json::from_str(JSON_MODEL_CONFIG).expect("Failed to parse JSON");
+fn logistic_regression_model() {
+    let decision_function = HashMap::from([
+        ("feature1".to_string(), 0.5),
+        ("feature2".to_string(), -0.3),
+        ("constant".to_string(), 1.2),
+    ]);
+    let info =
+        InstructionModelInfo::from_logistic_regression_model(decision_function, None).unwrap();
+    assert_eq!(
+        info.features,
+        Some(vec!["feature1".to_string(), "feature2".to_string()])
+    );
+    let model = InstructionModel::new(info).unwrap();
+    let expected = 1.0 / (1.0 + (-(0.5f32 * 2.0 - 0.3 * 1.0 + 1.2)).exp());
+    assert!((model.predict_single(&[2.0, 1.0]).unwrap() - expected).abs() < 1e-6);
 
-    // This should not panic and should create a valid model
-    let model = InstructionModel::new(instruction_model_info);
-    assert!(model.is_ok(), "Model creation should succeed");
-}
-
-#[test]
-fn test_logistic_regression_model() {
-    let mut decision_function = HashMap::new();
-    decision_function.insert("feature1".to_string(), 0.5);
-    decision_function.insert("feature2".to_string(), -0.3);
-    decision_function.insert("constant".to_string(), 1.2);
-
-    let model_info = InstructionModelInfo::from_logistic_regression_model(decision_function, None);
-
-    assert!(model_info.is_ok());
-    let model_info = model_info.unwrap();
-
-    assert_eq!(model_info.features.as_ref().unwrap().len(), 2);
-    assert_eq!(model_info.computation_buffer_sizes, vec![2, 1]);
-    assert_eq!(model_info.weights.len(), 1);
-    assert_eq!(model_info.bias.len(), 1);
-    assert_eq!(model_info.bias[0][0], 1.2);
-
-    // Create the actual model
-    let model = InstructionModel::new(model_info);
-    assert!(model.is_ok());
+    let reordered = HashMap::from([("a".to_string(), 1.0), ("b".to_string(), 2.0)]);
+    let info = InstructionModelInfo::from_logistic_regression_model(
+        reordered.clone(),
+        Some(vec!["b".to_string(), "a".to_string()]),
+    )
+    .unwrap();
+    assert_eq!(info.weights, vec![vec![vec![2.0, 1.0]]]);
+    assert!(
+        InstructionModelInfo::from_logistic_regression_model(
+            reordered,
+            Some(vec!["a".to_string()])
+        )
+        .is_err()
+    );
 }

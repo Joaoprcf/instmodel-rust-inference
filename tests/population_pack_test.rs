@@ -1,14 +1,9 @@
-//! PopulationPack integration tests: tiling, per-candidate writes, and the
-//! zero-repack canonical-theta invariant, all through the public API.
-
 use instmodel_inference::activation::Activation;
 use instmodel_inference::gpu::{GpuModel, GpuModelError, PopulationPack};
 use instmodel_inference::graph::{Graph, ModelGraph};
 use instmodel_inference::params::ParamLayout;
 
-/// input(4) → normalize (constants → params region) → dense(3, Tanh) →
-/// dense(2). Exercises both a non-empty params region and multiple weight
-/// slots.
+/// Non-empty params region (normalize constants) plus two weight slots.
 fn demo_graph() -> ModelGraph {
     let graph = Graph::new();
     let x = graph.input(4, None);
@@ -86,22 +81,8 @@ fn write_candidate_f64_narrows_values() {
 }
 
 #[test]
-fn constants_live_in_params_region_not_theta() {
-    let model_graph = demo_graph();
-    let info = model_graph.compile_zeroed().unwrap();
-    let pack = PopulationPack::new(&info, 1).unwrap();
-    let template = GpuModel::from_info(&info).unwrap();
-
-    // The normalize constants occupy a params region beyond the weights
-    // region, so the blob extends past weights_offset + theta_len.
-    assert!(info.parameters.is_some());
-    assert!(template.weights_offset() + pack.theta_len() < pack.model_stride());
-}
-
-#[test]
 fn written_candidate_matches_directly_serialized_model() {
-    // End-to-end zero-repack check: writing theta into a zeroed pack must
-    // produce the exact bytes of a model serialized from compile(theta).
+    // Writing theta into a zeroed pack must equal serializing compile(theta).
     let model_graph = demo_graph();
     let layout = model_graph.weights_map().unwrap();
     let theta = sentinel_theta(layout.total);
@@ -116,12 +97,19 @@ fn written_candidate_matches_directly_serialized_model() {
 }
 
 #[test]
-fn from_graph_starts_zeroed() {
+fn from_graph_starts_zeroed_and_tiles_the_template() {
     let model_graph = demo_graph();
+    let info = model_graph.compile_zeroed().unwrap();
+    let template = GpuModel::from_info(&info).unwrap();
     let pack = PopulationPack::from_graph(&model_graph, 2).unwrap();
-    let layout = model_graph.weights_map().unwrap();
 
-    assert_eq!(pack.theta_len(), layout.total);
+    assert_eq!(pack.n_candidates(), 2);
+    assert_eq!(pack.theta_len(), model_graph.weights_map().unwrap().total);
+    assert_eq!(pack.host_blob().len(), 2 * template.full_size());
+    assert_eq!(pack.as_bytes().len(), 2 * template.full_size() * 4);
+    // Normalize constants live in a params region after the weights region.
+    assert!(info.parameters.is_some());
+    assert!(template.weights_offset() + pack.theta_len() < pack.model_stride());
     for candidate in 0..2 {
         assert!(
             pack.candidate_theta(candidate)
@@ -130,18 +118,6 @@ fn from_graph_starts_zeroed() {
                 .all(|&v| v == 0.0)
         );
     }
-}
-
-#[test]
-fn single_candidate_pack() {
-    let model_graph = demo_graph();
-    let info = model_graph.compile_zeroed().unwrap();
-    let template = GpuModel::from_info(&info).unwrap();
-    let pack = PopulationPack::new(&info, 1).unwrap();
-
-    assert_eq!(pack.n_candidates(), 1);
-    assert_eq!(pack.host_blob().len(), template.full_size());
-    assert_eq!(pack.as_bytes().len(), template.full_size() * 4);
 }
 
 #[test]

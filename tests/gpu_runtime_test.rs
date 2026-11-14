@@ -1,8 +1,7 @@
-//! PopulationEvaluator integration tests (`gpu-runtime` feature).
-//!
-//! Every GPU-touching test self-skips when no usable adapter is available.
-
+//! GPU-touching tests self-skip when no usable adapter is available.
 #![cfg(feature = "gpu-runtime")]
+
+mod common;
 
 use instmodel_inference::InstructionModel;
 use instmodel_inference::activation::Activation;
@@ -46,7 +45,6 @@ fn batch_inputs(batch_size: usize, feature_size: usize) -> Vec<f32> {
         .collect()
 }
 
-/// CPU reference: apply each candidate's theta in place and predict each row.
 fn cpu_reference(
     model_graph: &ModelGraph,
     thetas: &[Vec<f32>],
@@ -68,14 +66,7 @@ fn cpu_reference(
 }
 
 fn compare(expected: &[f32], actual: &[f32], name: &str) {
-    assert_eq!(expected.len(), actual.len(), "{name}: length mismatch");
-    for (i, (e, a)) in expected.iter().zip(actual.iter()).enumerate() {
-        let diff = (e - a).abs();
-        assert!(
-            diff < TOLERANCE,
-            "{name}: mismatch at {i}: expected {e}, got {a} (diff {diff})"
-        );
-    }
+    common::assert_close(actual, expected, TOLERANCE, name);
 }
 
 #[test]
