@@ -32,6 +32,33 @@ let model = InstructionModel::new(info)?;   // validates every index/size up fro
 let y = model.predict(&[1.0, 2.0])?;        // output = last buffer
 ```
 
+## Sequence models
+
+A causal transformer exported by instmodel as `format_version` 2 runs one token per
+`step`. Its key/value caches and feature scanners live in a `SequenceState` the caller
+owns: keep one per sequence, `clone` it to branch, `truncate` it to rewind, or save it
+with `to_bytes`. Stepping does not allocate, and one `SequenceModel` serves any number of
+states from any number of threads.
+
+```rust
+use instmodel_inference::{InstructionModelInfo, SequenceModel, argmax_allowed};
+
+let info: InstructionModelInfo = serde_json::from_str(&std::fs::read_to_string("model.json")?)?;
+let model = SequenceModel::new(info)?;      // validates, replays validation_sequences
+let mut state = model.new_state();
+let mut token = 3;
+for _ in 0..10 {
+    let logits = model.step(&mut state, token)?; // next-token logits
+    token = argmax_allowed(logits, &[0, 1, 2]).unwrap_or(0);
+}
+let saved = state.to_bytes();
+let restored = model.state_from_bytes(&saved)?; // continues bit-identically
+```
+
+`InstructionModel` rejects models with stateful instructions (`SEGMENT_FEATURES`,
+`CAUSAL_ATTENTION`); the GPU path supports none of the four sequence instructions.
+`cargo run --release --bin sequence_benchmark` reports microseconds per token.
+
 ## License
 
 MIT

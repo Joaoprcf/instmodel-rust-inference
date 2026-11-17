@@ -623,6 +623,9 @@ mod tests {
             parameters: Some(vec![vec![0.25, -1.5]]),
             maps: None,
             validation_data: None,
+            format_version: None,
+            sequence: None,
+            validation_sequences: None,
         }
     }
 

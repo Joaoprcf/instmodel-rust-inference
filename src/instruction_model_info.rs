@@ -44,6 +44,14 @@ pub enum InstructionInfo {
     ReduceSum(ReduceSumInstructionInfo),
     #[serde(rename = "ATTENTION")]
     Attention(AttentionInstructionInfo),
+    #[serde(rename = "EMBEDDING")]
+    Embedding(EmbeddingInstructionInfo),
+    #[serde(rename = "LAYER_NORM")]
+    LayerNorm(LayerNormInstructionInfo),
+    #[serde(rename = "SEGMENT_FEATURES")]
+    SegmentFeatures(SegmentFeaturesInstructionInfo),
+    #[serde(rename = "CAUSAL_ATTENTION")]
+    CausalAttention(CausalAttentionInstructionInfo),
 }
 
 impl InstructionInfo {
@@ -64,6 +72,10 @@ impl InstructionInfo {
             InstructionInfo::AddBufferHeads(info) => info.input.clone(),
             InstructionInfo::ReduceSum(info) => vec![info.input],
             InstructionInfo::Attention(info) => vec![info.input, info.key],
+            InstructionInfo::Embedding(info) => vec![info.input],
+            InstructionInfo::LayerNorm(info) => vec![info.input],
+            InstructionInfo::SegmentFeatures(info) => vec![info.input],
+            InstructionInfo::CausalAttention(info) => vec![info.input],
         }
     }
 
@@ -84,7 +96,44 @@ impl InstructionInfo {
             InstructionInfo::AddBufferHeads(info) => info.output,
             InstructionInfo::ReduceSum(info) => info.output,
             InstructionInfo::Attention(info) => info.output,
+            InstructionInfo::Embedding(info) => info.output,
+            InstructionInfo::LayerNorm(info) => info.output,
+            InstructionInfo::SegmentFeatures(info) => info.output,
+            InstructionInfo::CausalAttention(info) => info.output,
         }
+    }
+
+    /// The JSON `"type"` name.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            InstructionInfo::Dot(_) => "DOT",
+            InstructionInfo::Copy(_) => "COPY",
+            InstructionInfo::CopyMasked(_) => "COPY_MASKED",
+            InstructionInfo::Activation(_) => "ACTIVATION",
+            InstructionInfo::ElemWiseAdd(_) => "ADD_ELEMENTWISE",
+            InstructionInfo::ElemWiseMul(_) => "MUL_ELEMENTWISE",
+            InstructionInfo::ClipElementwise(_) => "CLIP_ELEMENTWISE",
+            InstructionInfo::MapTransform(_) => "MAP_TRANSFORM",
+            InstructionInfo::ElemWiseBuffersAdd(_) => "ADD_ELEMENTWISE_BUFFERS",
+            InstructionInfo::ElemWiseBuffersMul(_) => "MULTIPLY_ELEMENTWISE_BUFFERS",
+            InstructionInfo::MultiplyBufferHeads(_) => "MULTIPLY_BUFFER_HEADS",
+            InstructionInfo::AddBufferHeads(_) => "ADD_BUFFER_HEADS",
+            InstructionInfo::ReduceSum(_) => "REDUCE_SUM",
+            InstructionInfo::Attention(_) => "ATTENTION",
+            InstructionInfo::Embedding(_) => "EMBEDDING",
+            InstructionInfo::LayerNorm(_) => "LAYER_NORM",
+            InstructionInfo::SegmentFeatures(_) => "SEGMENT_FEATURES",
+            InstructionInfo::CausalAttention(_) => "CAUSAL_ATTENTION",
+        }
+    }
+
+    /// Whether the instruction reads or updates per-sequence state, so that only
+    /// [`crate::SequenceModel`] can run it.
+    pub fn is_stateful(&self) -> bool {
+        matches!(
+            self,
+            InstructionInfo::SegmentFeatures(_) | InstructionInfo::CausalAttention(_)
+        )
     }
 
     /// Whether the instruction may write only part of its output buffer.
@@ -212,6 +261,93 @@ pub struct AttentionInstructionInfo {
     pub weights: usize,
 }
 
+/// Writes row `round(input[internal_input_index])` of `weights[weights]` (`[rows][width]`)
+/// to `output`. The slot's bias is not used here; a tied readout DOT on the same slot uses
+/// it. An id that is negative, non-finite or not below `rows` is an execution error.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingInstructionInfo {
+    pub input: usize,
+    #[serde(default)]
+    pub internal_input_index: usize,
+    pub output: usize,
+    pub weights: usize,
+}
+
+/// `(x - mean) / sqrt(var + epsilon) * parameters[gain] + parameters[bias]`, with the
+/// population variance over the whole input buffer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LayerNormInstructionInfo {
+    pub input: usize,
+    pub output: usize,
+    pub gain: usize,
+    pub bias: usize,
+    pub epsilon: f32,
+}
+
+/// Writes `[ordinal, index]` for the token in `input[0]`, advancing feature scanner
+/// `scanner`. A token is in a run when it is in `members`, or in `openers` while the
+/// previous token is not a member; `ordinal` counts run starts, `index` is the one-based
+/// place in the run (0 outside). Both outputs clamp to `rows - 1`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SegmentFeaturesInstructionInfo {
+    pub input: usize,
+    pub output: usize,
+    pub members: Vec<u32>,
+    #[serde(default)]
+    pub openers: Vec<u32>,
+    pub rows: usize,
+    pub scanner: usize,
+}
+
+/// Causal self-attention for one token. `input` is `[q | k | v]` with `heads`,
+/// `kv_heads` and `kv_heads` heads of the slot's `head_dim`; k and v are appended to
+/// key/value slot `slot`, and query head `h` attends over every cached position of
+/// key/value head `h / (heads / kv_heads)` with scale `head_dim^-0.5`. `output` holds
+/// `heads * head_dim` values.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CausalAttentionInstructionInfo {
+    pub input: usize,
+    pub output: usize,
+    pub heads: usize,
+    pub kv_heads: usize,
+    pub slot: usize,
+}
+
+/// Shape of one key/value cache slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KvSlotInfo {
+    pub heads: usize,
+    pub kv_heads: usize,
+    pub head_dim: usize,
+}
+
+/// The `sequence` block of a format-2 model: the state a step program carries between tokens.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SequenceInfo {
+    /// Token names; the logits buffer has one entry per token.
+    pub vocabulary: Vec<String>,
+    /// Tokens one state can hold.
+    pub max_positions: usize,
+    #[serde(default)]
+    pub kv_slots: Vec<KvSlotInfo>,
+    /// Number of SEGMENT_FEATURES scanners.
+    #[serde(default)]
+    pub scanners: usize,
+    /// Training configuration, kept for the caller.
+    #[serde(default)]
+    pub config: serde_json::Value,
+    /// Free-form data for the caller (e.g. a decoding protocol).
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+}
+
+/// A token sequence with the reference next-token logits after every token.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidationSequence {
+    pub tokens: Vec<u32>,
+    pub logits: Vec<Vec<f32>>,
+}
+
 /// A model in the JSON format. At least one of `features`/`feature_size` is required; if both, they must agree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstructionModelInfo {
@@ -232,6 +368,15 @@ pub struct InstructionModelInfo {
     pub maps: Option<Vec<HashMap<String, Vec<f32>>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub validation_data: Option<ValidationData>,
+    /// 2 for sequence models; absent (or 1) for plain models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format_version: Option<u32>,
+    /// Per-sequence state of a format-2 step program (see [`crate::SequenceModel`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<SequenceInfo>,
+    /// Replayed by [`crate::SequenceModel::new`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_sequences: Option<Vec<ValidationSequence>>,
 }
 
 impl InstructionModelInfo {
@@ -290,6 +435,9 @@ impl InstructionModelInfo {
             parameters: None,
             maps: None,
             validation_data: None,
+            format_version: None,
+            sequence: None,
+            validation_sequences: None,
         })
     }
 }
@@ -305,6 +453,9 @@ pub struct InstructionModelInfoBuilder {
     parameters: Option<Vec<Vec<f32>>>,
     maps: Option<Vec<HashMap<String, Vec<f32>>>>,
     validation_data: Option<ValidationData>,
+    format_version: Option<u32>,
+    sequence: Option<SequenceInfo>,
+    validation_sequences: Option<Vec<ValidationSequence>>,
 }
 
 impl InstructionModelInfoBuilder {
@@ -319,6 +470,9 @@ impl InstructionModelInfoBuilder {
             parameters: None,
             maps: None,
             validation_data: None,
+            format_version: None,
+            sequence: None,
+            validation_sequences: None,
         }
     }
 
@@ -367,6 +521,21 @@ impl InstructionModelInfoBuilder {
         self
     }
 
+    pub fn format_version(mut self, value: u32) -> Self {
+        self.format_version = Some(value);
+        self
+    }
+
+    pub fn sequence(mut self, value: SequenceInfo) -> Self {
+        self.sequence = Some(value);
+        self
+    }
+
+    pub fn validation_sequences(mut self, value: Vec<ValidationSequence>) -> Self {
+        self.validation_sequences = Some(value);
+        self
+    }
+
     pub fn build(self) -> Result<InstructionModelInfo, crate::errors::InstructionModelError> {
         if self.features.is_none() && self.feature_size.is_none() {
             return Err(crate::errors::InstructionModelError::MissingFeatures);
@@ -382,6 +551,9 @@ impl InstructionModelInfoBuilder {
             parameters: self.parameters,
             maps: self.maps,
             validation_data: self.validation_data,
+            format_version: self.format_version,
+            sequence: self.sequence,
+            validation_sequences: self.validation_sequences,
         })
     }
 }

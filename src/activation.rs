@@ -248,6 +248,28 @@ mod tests {
     }
 
     #[test]
+    fn gelu_matches_exact_erf() {
+        // x * 0.5 * (1 + erf(x / sqrt(2))) in f64 (SciPy); sequence models need ~1e-6.
+        let exact: [(f32, f64); 11] = [
+            (-4.0, -0.000_126_684_967_332_479_9),
+            (-3.0, -0.004_049_694_094_890_31),
+            (-2.0, -0.045_500_263_896_358_42),
+            (-1.0, -0.158_655_253_931_457_07),
+            (-0.5, -0.154_268_769_362_993_47),
+            (0.25, 0.149_676_581_420_730_93),
+            (0.5, 0.345_731_230_637_006_5),
+            (1.0, 0.841_344_746_068_542_9),
+            (2.0, 1.954_499_736_103_641_6),
+            (3.05, 3.046_510_169_165_381),
+            (5.0, 4.999_998_566_742_141),
+        ];
+        for (x, expected) in exact {
+            let error = (f64::from(Gelu.apply_single(x)) - expected).abs();
+            assert!(error < 1e-6, "GELU({x}) off by {error}");
+        }
+    }
+
+    #[test]
     fn softmax_normalizes_vector() {
         let mut values = [1.0, 2.0, 3.0];
         Softmax.apply_in_place(&mut values);

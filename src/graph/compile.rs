@@ -50,5 +50,8 @@ fn assemble(plan: Plan, theta: &[f32]) -> Result<InstructionModelInfo, GraphErro
             Some(plan.maps)
         },
         validation_data: None,
+        format_version: None,
+        sequence: None,
+        validation_sequences: None,
     })
 }

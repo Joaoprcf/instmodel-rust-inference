@@ -92,6 +92,9 @@ fn create_benchmark_model() -> InstructionModelInfo {
         parameters: None,
         maps: None,
         validation_data: None,
+        format_version: None,
+        sequence: None,
+        validation_sequences: None,
     }
 }
 

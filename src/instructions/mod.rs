@@ -3,12 +3,14 @@
 use std::collections::HashMap;
 
 use crate::errors::InstructionModelError;
-use crate::instruction_model_info::InstructionInfo;
+use crate::instruction_model_info::{InstructionInfo, SequenceInfo};
 use crate::instruction_model_validation::validate_instruction;
+use crate::sequence::StepState;
 
 pub mod activation_instruction;
 pub mod add_buffer_heads_instruction;
 pub mod attention_instruction;
+pub mod causal_attention_instruction;
 pub mod clip_elementwise_instruction;
 pub mod copy_instruction;
 pub mod copy_masked_instruction;
@@ -17,13 +19,17 @@ pub mod elem_wise_add_instruction;
 pub mod elem_wise_buffers_add_instruction;
 pub mod elem_wise_buffers_mul_instruction;
 pub mod elem_wise_mul_instruction;
+pub mod embedding_instruction;
+pub mod layer_norm_instruction;
 pub mod map_transform_instruction;
 pub mod multiply_buffer_heads_instruction;
 pub mod reduce_sum_instruction;
+pub mod segment_features_instruction;
 
 pub use activation_instruction::ActivationInstruction;
 pub use add_buffer_heads_instruction::AddBufferHeadsInstruction;
 pub use attention_instruction::AttentionInstruction;
+pub use causal_attention_instruction::CausalAttentionInstruction;
 pub use clip_elementwise_instruction::ClipElementwiseInstruction;
 pub use copy_instruction::CopyInstruction;
 pub use copy_masked_instruction::CopyMaskedInstruction;
@@ -32,9 +38,12 @@ pub use elem_wise_add_instruction::ElemWiseAddInstruction;
 pub use elem_wise_buffers_add_instruction::ElemWiseBuffersAddInstruction;
 pub use elem_wise_buffers_mul_instruction::ElemWiseBuffersMulInstruction;
 pub use elem_wise_mul_instruction::ElemWiseMulInstruction;
+pub use embedding_instruction::EmbeddingInstruction;
+pub use layer_norm_instruction::LayerNormInstruction;
 pub use map_transform_instruction::MapTransformInstruction;
 pub use multiply_buffer_heads_instruction::MultiplyBufferHeadsInstruction;
 pub use reduce_sum_instruction::ReduceSumInstruction;
+pub use segment_features_instruction::SegmentFeaturesInstruction;
 
 /// One executable step over the unified computation buffer.
 pub trait Instruction: Send + Sync {
@@ -46,8 +55,21 @@ pub trait Instruction: Send + Sync {
 
     fn apply(&self, unified_computation_buffer: &mut [f32]) -> Result<(), InstructionModelError>;
 
-    /// Overwrites dense parameters (row-major weights, then bias); only DOT and ATTENTION
-    /// support it, others return [`InstructionModelError::ThetaUnsupported`].
+    /// Runs the instruction for one token of a sequence, reading and updating the
+    /// per-sequence `state` (see [`crate::SequenceModel::step`]). Stateless instructions
+    /// keep this default, which calls [`Instruction::apply`]; stateful ones return
+    /// [`InstructionModelError::MissingSequenceState`] from `apply`.
+    fn apply_with_state(
+        &self,
+        unified_computation_buffer: &mut [f32],
+        state: &mut StepState,
+    ) -> Result<(), InstructionModelError> {
+        let _ = state;
+        self.apply(unified_computation_buffer)
+    }
+
+    /// Overwrites dense parameters (row-major weights, then bias); only DOT, ATTENTION and
+    /// EMBEDDING support it, others return [`InstructionModelError::ThetaUnsupported`].
     fn set_dense_params(
         &mut self,
         _weights: &[f32],
@@ -227,7 +249,10 @@ macro_rules! buffer_heads_instruction {
 }
 use buffer_heads_instruction;
 
-/// Validates `instruction_info` against the model context and builds the executable instruction.
+/// Validates `instruction_info` against the model context and builds the executable
+/// instruction. Stateful instructions (SEGMENT_FEATURES, CAUSAL_ATTENTION) need the
+/// model's `sequence` block and are rejected here with
+/// [`InstructionModelError::MissingSequenceState`].
 pub fn create_instruction(
     instruction_info: &InstructionInfo,
     computation_buffer_indexes: &[usize],
@@ -237,108 +262,188 @@ pub fn create_instruction(
     parameters: &[Vec<f32>],
     maps: &[HashMap<String, Vec<f32>>],
 ) -> Result<Box<dyn Instruction>, InstructionModelError> {
-    validate_instruction(
-        instruction_info,
+    let context = ModelContext {
+        computation_buffer_indexes,
         computation_buffer_sizes,
         weights,
         bias,
         parameters,
         maps,
-    )?;
-    let ptr = |buffer: usize| computation_buffer_indexes[buffer];
-    let size = |buffer: usize| computation_buffer_sizes[buffer];
+        sequence: None,
+    };
+    context.create(instruction_info)
+}
 
-    Ok(match instruction_info {
-        InstructionInfo::Dot(info) => Box::new(DotInstruction::new(
-            ptr(info.input),
-            ptr(info.output),
-            size(info.output),
-            &weights[info.weights],
-            &bias[info.weights],
-            info.activation,
-        )?),
-        InstructionInfo::Copy(info) => Box::new(CopyInstruction::new(
-            ptr(info.input),
-            ptr(info.output) + info.internal_index,
-            size(info.input),
-        )),
-        InstructionInfo::CopyMasked(info) => Box::new(CopyMaskedInstruction::new(
-            ptr(info.input),
-            ptr(info.output),
-            &info.indexes,
-        )),
-        InstructionInfo::Activation(info) => Box::new(ActivationInstruction::new(
-            info.activation,
-            ptr(info.input),
-            size(info.input),
-        )),
-        InstructionInfo::ElemWiseAdd(info) => Box::new(ElemWiseAddInstruction::new(
-            ptr(info.input),
-            size(info.input),
-            &parameters[info.parameters],
-        )),
-        InstructionInfo::ElemWiseMul(info) => Box::new(ElemWiseMulInstruction::new(
-            ptr(info.input),
-            size(info.input),
-            &parameters[info.parameters],
-        )),
-        InstructionInfo::ClipElementwise(info) => Box::new(ClipElementwiseInstruction::new(
-            ptr(info.input),
-            size(info.input),
-            info.parameters_min.map(|idx| parameters[idx].clone()),
-            info.parameters_max.map(|idx| parameters[idx].clone()),
-        )),
-        InstructionInfo::MapTransform(info) => Box::new(MapTransformInstruction::new(
-            ptr(info.input) + info.internal_input_index,
-            ptr(info.output) + info.internal_output_index,
-            info.size,
-            &maps[info.map],
-            &info.default_value,
-        )),
-        InstructionInfo::ElemWiseBuffersAdd(info) => Box::new(ElemWiseBuffersAddInstruction::new(
-            info.input.iter().map(|&idx| ptr(idx)).collect(),
-            ptr(info.output),
-            size(info.output),
-        )),
-        InstructionInfo::ElemWiseBuffersMul(info) => Box::new(ElemWiseBuffersMulInstruction::new(
-            info.input.iter().map(|&idx| ptr(idx)).collect(),
-            ptr(info.output),
-            size(info.output),
-        )),
-        InstructionInfo::ReduceSum(info) => Box::new(ReduceSumInstruction::new(
-            ptr(info.input),
-            ptr(info.output),
-            size(info.input),
-        )),
-        InstructionInfo::Attention(info) => Box::new(AttentionInstruction::new(
-            ptr(info.input),
-            ptr(info.key),
-            ptr(info.output),
-            size(info.output),
-            &weights[info.weights],
-            &bias[info.weights],
-        )),
-        InstructionInfo::MultiplyBufferHeads(info) => {
-            let (data, heads) = (info.input[0], info.input[1]);
-            Box::new(MultiplyBufferHeadsInstruction::new(
-                ptr(data),
-                ptr(heads),
+/// Everything an instruction may reference, borrowed from one model definition.
+pub(crate) struct ModelContext<'a> {
+    pub(crate) computation_buffer_indexes: &'a [usize],
+    pub(crate) computation_buffer_sizes: &'a [usize],
+    pub(crate) weights: &'a [Vec<Vec<f32>>],
+    pub(crate) bias: &'a [Vec<f32>],
+    pub(crate) parameters: &'a [Vec<f32>],
+    pub(crate) maps: &'a [HashMap<String, Vec<f32>>],
+    pub(crate) sequence: Option<&'a SequenceInfo>,
+}
+
+impl ModelContext<'_> {
+    /// Validates and builds one instruction (see [`create_instruction`]).
+    pub(crate) fn create(
+        &self,
+        instruction_info: &InstructionInfo,
+    ) -> Result<Box<dyn Instruction>, InstructionModelError> {
+        let ModelContext {
+            computation_buffer_indexes,
+            computation_buffer_sizes,
+            weights,
+            bias,
+            parameters,
+            maps,
+            sequence,
+        } = *self;
+        validate_instruction(
+            instruction_info,
+            computation_buffer_sizes,
+            weights,
+            bias,
+            parameters,
+            maps,
+            sequence,
+        )?;
+        let ptr = |buffer: usize| computation_buffer_indexes[buffer];
+        let size = |buffer: usize| computation_buffer_sizes[buffer];
+
+        Ok(match instruction_info {
+            InstructionInfo::Dot(info) => Box::new(DotInstruction::new(
+                ptr(info.input),
                 ptr(info.output),
-                size(data),
-                size(heads),
-            )?)
-        }
-        InstructionInfo::AddBufferHeads(info) => {
-            let (data, heads) = (info.input[0], info.input[1]);
-            Box::new(AddBufferHeadsInstruction::new(
-                ptr(data),
-                ptr(heads),
+                size(info.output),
+                &weights[info.weights],
+                &bias[info.weights],
+                info.activation,
+            )?),
+            InstructionInfo::Copy(info) => Box::new(CopyInstruction::new(
+                ptr(info.input),
+                ptr(info.output) + info.internal_index,
+                size(info.input),
+            )),
+            InstructionInfo::CopyMasked(info) => Box::new(CopyMaskedInstruction::new(
+                ptr(info.input),
                 ptr(info.output),
-                size(data),
-                size(heads),
-            )?)
-        }
-    })
+                &info.indexes,
+            )),
+            InstructionInfo::Activation(info) => Box::new(ActivationInstruction::new(
+                info.activation,
+                ptr(info.input),
+                size(info.input),
+            )),
+            InstructionInfo::ElemWiseAdd(info) => Box::new(ElemWiseAddInstruction::new(
+                ptr(info.input),
+                size(info.input),
+                &parameters[info.parameters],
+            )),
+            InstructionInfo::ElemWiseMul(info) => Box::new(ElemWiseMulInstruction::new(
+                ptr(info.input),
+                size(info.input),
+                &parameters[info.parameters],
+            )),
+            InstructionInfo::ClipElementwise(info) => Box::new(ClipElementwiseInstruction::new(
+                ptr(info.input),
+                size(info.input),
+                info.parameters_min.map(|idx| parameters[idx].clone()),
+                info.parameters_max.map(|idx| parameters[idx].clone()),
+            )),
+            InstructionInfo::MapTransform(info) => Box::new(MapTransformInstruction::new(
+                ptr(info.input) + info.internal_input_index,
+                ptr(info.output) + info.internal_output_index,
+                info.size,
+                &maps[info.map],
+                &info.default_value,
+            )),
+            InstructionInfo::ElemWiseBuffersAdd(info) => {
+                Box::new(ElemWiseBuffersAddInstruction::new(
+                    info.input.iter().map(|&idx| ptr(idx)).collect(),
+                    ptr(info.output),
+                    size(info.output),
+                ))
+            }
+            InstructionInfo::ElemWiseBuffersMul(info) => {
+                Box::new(ElemWiseBuffersMulInstruction::new(
+                    info.input.iter().map(|&idx| ptr(idx)).collect(),
+                    ptr(info.output),
+                    size(info.output),
+                ))
+            }
+            InstructionInfo::ReduceSum(info) => Box::new(ReduceSumInstruction::new(
+                ptr(info.input),
+                ptr(info.output),
+                size(info.input),
+            )),
+            InstructionInfo::Attention(info) => Box::new(AttentionInstruction::new(
+                ptr(info.input),
+                ptr(info.key),
+                ptr(info.output),
+                size(info.output),
+                &weights[info.weights],
+                &bias[info.weights],
+            )),
+            InstructionInfo::MultiplyBufferHeads(info) => {
+                let (data, heads) = (info.input[0], info.input[1]);
+                Box::new(MultiplyBufferHeadsInstruction::new(
+                    ptr(data),
+                    ptr(heads),
+                    ptr(info.output),
+                    size(data),
+                    size(heads),
+                )?)
+            }
+            InstructionInfo::AddBufferHeads(info) => {
+                let (data, heads) = (info.input[0], info.input[1]);
+                Box::new(AddBufferHeadsInstruction::new(
+                    ptr(data),
+                    ptr(heads),
+                    ptr(info.output),
+                    size(data),
+                    size(heads),
+                )?)
+            }
+            InstructionInfo::Embedding(info) => Box::new(EmbeddingInstruction::new(
+                ptr(info.input) + info.internal_input_index,
+                ptr(info.output),
+                size(info.output),
+                &weights[info.weights],
+                &bias[info.weights],
+            )),
+            InstructionInfo::LayerNorm(info) => Box::new(LayerNormInstruction::new(
+                ptr(info.input),
+                ptr(info.output),
+                size(info.output),
+                &parameters[info.gain],
+                &parameters[info.bias],
+                info.epsilon,
+            )),
+            InstructionInfo::SegmentFeatures(info) => Box::new(SegmentFeaturesInstruction::new(
+                ptr(info.input),
+                ptr(info.output),
+                &info.members,
+                &info.openers,
+                info.rows,
+                info.scanner,
+            )),
+            InstructionInfo::CausalAttention(info) => {
+                let slot = sequence
+                    .and_then(|sequence| sequence.kv_slots.get(info.slot))
+                    .ok_or(InstructionModelError::KvSlotIndexOutOfBounds { index: info.slot })?;
+                Box::new(CausalAttentionInstruction::new(
+                    ptr(info.input),
+                    ptr(info.output),
+                    info.heads,
+                    info.kv_heads,
+                    slot.head_dim,
+                    info.slot,
+                ))
+            }
+        })
+    }
 }
 
 /// Borrows `buf[src..src + src_len]` and `buf[dst..dst + dst_len]` together, or `None`

@@ -1,6 +1,6 @@
 [package]
 name = "instmodel_inference"
-version = "1.1.1"
+version = "1.2.0"
 edition = "2024"
 rust-version = "1.89"
 license = "MIT"
@@ -26,6 +26,10 @@ required-features = ["gpu-benchmark"]
 [[bin]]
 name = "es_benchmark"
 path = "benchmarks/bin/es_benchmark.rs"
+
+[[bin]]
+name = "sequence_benchmark"
+path = "benchmarks/bin/sequence_benchmark.rs"
 
 [[example]]
 name = "es_train_gpu"

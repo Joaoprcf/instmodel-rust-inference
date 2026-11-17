@@ -187,6 +187,9 @@ fn create_framework_model(
         parameters: None,
         maps: None,
         validation_data: None,
+        format_version: None,
+        sequence: None,
+        validation_sequences: None,
     };
 
     InstructionModel::new(model_info).expect("Model creation should succeed")

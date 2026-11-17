@@ -200,6 +200,9 @@ mod tests {
             parameters: None,
             maps: None,
             validation_data: None,
+            format_version: None,
+            sequence: None,
+            validation_sequences: None,
         }
     }
 

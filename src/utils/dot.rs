@@ -1,4 +1,5 @@
-//! SIMD dot-product kernels and the dense (matrix-vector + bias) layer shared by DOT and ATTENTION.
+//! SIMD dot-product kernels and the dense (matrix-vector + bias) layer shared by DOT,
+//! ATTENTION and EMBEDDING.
 
 use crate::errors::InstructionModelError;
 use crate::instructions::split_src_dst;
@@ -129,6 +130,12 @@ impl Dense {
 
     pub(crate) fn rows(&self) -> usize {
         self.bias.len()
+    }
+
+    /// Weights of row `r`, or `None` past the last row.
+    pub(crate) fn row(&self, r: usize) -> Option<&[f32]> {
+        let start = r.checked_mul(self.cols)?;
+        self.weights.get(start..start.checked_add(self.cols)?)
     }
 
     /// Writes the layer output for `buf[src..src + cols]` into `buf[dst..dst + rows]`

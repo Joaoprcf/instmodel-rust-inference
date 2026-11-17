@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.2.0
+
+- Sequence models (JSON `format_version` 2, all new fields optional): `SequenceModel`
+  runs a causal transformer's step program one token at a time, and `SequenceState`
+  holds its key/value caches and feature scanners for the caller (`clone`, exact
+  `truncate`, `reset`, versioned `to_bytes` / `SequenceModel::state_from_bytes` bound to
+  a model fingerprint). `step` does not allocate. Loading replays `validation_sequences`
+  (1e-3 absolute, identical argmax). `argmax_allowed` picks the first maximum among
+  allowed tokens.
+- Instructions `EMBEDDING`, `LAYER_NORM` (stateless; also usable in `InstructionModel`,
+  and `EMBEDDING` shares weight slots and θ with a tied readout `DOT`), `SEGMENT_FEATURES`
+  and `CAUSAL_ATTENTION` (stateful; `SequenceModel` only). `Instruction::apply_with_state`
+  defaults to `apply`.
+- `InstructionModelInfo` gains `format_version`, `sequence` and `validation_sequences`;
+  code that builds it with a struct literal must add them (`None`).
+- `InstructionModel::new` rejects stateful instructions (`StatefulInstruction`) and
+  unknown `format_version`s; `GpuModel` rejects the four new instructions.
+- `sequence_benchmark` binary.
+
 ## 1.1.1
 
 - Security: every instruction reference in model JSON (COPY `internal_index`,

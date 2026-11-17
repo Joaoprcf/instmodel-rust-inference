@@ -42,6 +42,18 @@ fn attention(params: JaggedParams) -> InstructionModelInfo {
     )
 }
 
+/// Token table (slot 0) read by EMBEDDING and by the tied readout DOT, whose bias it is.
+fn tied_table(params: JaggedParams) -> InstructionModelInfo {
+    with_params(
+        json!({"buffer_sizes": [1, 2, 2, 3], "parameters": [[1.5, 0.5], [0.25, -0.25]],
+            "instructions": [
+            {"type": "EMBEDDING", "input": 0, "output": 1, "weights": 0},
+            {"type": "LAYER_NORM", "input": 1, "output": 2, "gain": 0, "bias": 1, "epsilon": 1e-5},
+            {"type": "DOT", "input": 2, "output": 3, "weights": 0}]}),
+        params,
+    )
+}
+
 const MLP_SHAPES: &[[usize; 2]] = &[[4, 3], [2, 4]];
 
 /// Distinct, exactly-f32-representable θ.
@@ -64,7 +76,7 @@ fn zeroed(builder: Build, shapes: &[[usize; 2]]) -> InstructionModel {
 
 #[test]
 fn apply_theta_matches_freshly_built_model_bitwise() {
-    let cases: [(&str, Build, Shapes, &[&[f32]]); 3] = [
+    let cases: [(&str, Build, Shapes, &[&[f32]]); 4] = [
         (
             "mlp",
             mlp,
@@ -78,6 +90,12 @@ fn apply_theta_matches_freshly_built_model_bitwise() {
         ),
         ("shared_slot", shared_slot, &[[2, 2]], &[&[0.7, -0.4]]),
         ("attention", attention, &[[2, 2]], &[&[1.0, 2.0, 0.5, -0.5]]),
+        (
+            "tied_table",
+            tied_table,
+            &[[3, 2]],
+            &[&[0.0], &[1.0], &[2.0]],
+        ),
     ];
     for (name, builder, shapes, inputs) in cases {
         let layout = ParamLayout::from_shapes(shapes);

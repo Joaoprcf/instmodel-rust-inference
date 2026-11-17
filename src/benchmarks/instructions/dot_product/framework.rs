@@ -47,6 +47,9 @@ impl FrameworkDotProduct {
             parameters: None,
             maps: None,
             validation_data: None,
+            format_version: None,
+            sequence: None,
+            validation_sequences: None,
         };
 
         let model = InstructionModel::new(model_info).map_err(|e| {

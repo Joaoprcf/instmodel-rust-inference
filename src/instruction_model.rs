@@ -2,9 +2,9 @@
 
 use crate::errors::{InstructionModelError, InstructionModelResult, ParallelPredictResult};
 use crate::high_performance_execution_utils::ParallelExecutionGraph;
-use crate::instruction_model_info::{InstructionInfo, InstructionModelInfo};
+use crate::instruction_model_info::{InstructionInfo, InstructionModelInfo, SequenceInfo};
 use crate::instruction_model_validation as validation;
-use crate::instructions::{Instruction, create_instruction};
+use crate::instructions::{Instruction, ModelContext};
 use crate::parallel_predict::{ParallelPredictOutput, PredictConfig, execute_parallel_predict};
 use crate::params::{ParamLayout, ThetaBinding};
 
@@ -31,7 +31,27 @@ pub struct InstructionModel {
 
 impl InstructionModel {
     /// Validates `instruction_model_info` (including its `validation_data`, if any) and builds the model.
+    ///
+    /// Models with stateful instructions (SEGMENT_FEATURES, CAUSAL_ATTENTION) fail with
+    /// [`InstructionModelError::StatefulInstruction`]; run them with [`crate::SequenceModel`].
     pub fn new(instruction_model_info: InstructionModelInfo) -> InstructionModelResult<Self> {
+        if let Some(version) = instruction_model_info
+            .format_version
+            .filter(|version| !(1..=2).contains(version))
+        {
+            return Err(InstructionModelError::UnsupportedFormatVersion { version });
+        }
+        if let Some((instruction_index, instruction)) = instruction_model_info
+            .instructions
+            .iter()
+            .enumerate()
+            .find(|(_, instruction)| instruction.is_stateful())
+        {
+            return Err(InstructionModelError::StatefulInstruction {
+                instruction_index,
+                instruction_type: instruction.type_name().to_string(),
+            });
+        }
         let feature_size = validation::validate_inputs(&instruction_model_info)?;
         let mut model = Self::with_layout(
             instruction_model_info.computation_buffer_sizes.clone(),
@@ -40,10 +60,11 @@ impl InstructionModel {
         )?;
         validation::validate_required_memory(model.output_index_end)?;
 
-        let (instructions, slot_owners) = Self::validate_and_create_instructions(
+        let (instructions, slot_owners) = build_instructions(
             &instruction_model_info,
             &model.computation_buffer_indexes,
             &model.computation_buffer_sizes,
+            None,
         )?;
         model.instructions = instructions;
         model.theta_binding = Some(ThetaBinding {
@@ -112,66 +133,6 @@ impl InstructionModel {
         instruction_model_info: &InstructionModelInfo,
     ) -> InstructionModelResult<usize> {
         validation::calculate_feature_size(instruction_model_info)
-    }
-
-    fn validate_and_create_instructions(
-        instruction_model_info: &InstructionModelInfo,
-        computation_buffer_indexes: &[usize],
-        computation_buffer_sizes: &[usize],
-    ) -> InstructionModelResult<BuiltInstructions> {
-        let weights = &instruction_model_info.weights;
-        let parameters = instruction_model_info.parameters.as_deref().unwrap_or(&[]);
-        let maps = instruction_model_info.maps.as_deref().unwrap_or(&[]);
-
-        let mut instructions = Vec::new();
-        let mut slot_owners: Vec<Vec<usize>> = vec![Vec::new(); weights.len()];
-        let mut used_parameters = vec![false; parameters.len()];
-        let mut used_maps = vec![false; maps.len()];
-
-        for (instruction_index, instruction_info) in
-            instruction_model_info.instructions.iter().enumerate()
-        {
-            instructions.push(create_instruction(
-                instruction_info,
-                computation_buffer_indexes,
-                computation_buffer_sizes,
-                weights,
-                &instruction_model_info.bias,
-                parameters,
-                maps,
-            )?);
-
-            match instruction_info {
-                InstructionInfo::Dot(info) => slot_owners[info.weights].push(instruction_index),
-                InstructionInfo::Attention(info) => {
-                    slot_owners[info.weights].push(instruction_index)
-                }
-                InstructionInfo::ElemWiseAdd(info) => used_parameters[info.parameters] = true,
-                InstructionInfo::ElemWiseMul(info) => used_parameters[info.parameters] = true,
-                InstructionInfo::ClipElementwise(info) => {
-                    for idx in [info.parameters_min, info.parameters_max]
-                        .into_iter()
-                        .flatten()
-                    {
-                        used_parameters[idx] = true;
-                    }
-                }
-                InstructionInfo::MapTransform(info) => used_maps[info.map] = true,
-                _ => {}
-            }
-        }
-
-        if let Some(index) = slot_owners.iter().position(Vec::is_empty) {
-            return Err(InstructionModelError::UnusedWeights { index });
-        }
-        if let Some(index) = used_parameters.iter().position(|used| !used) {
-            return Err(InstructionModelError::UnusedParameters { index });
-        }
-        if let Some(index) = used_maps.iter().position(|used| !used) {
-            return Err(InstructionModelError::UnusedMap { index });
-        }
-
-        Ok((instructions, slot_owners))
     }
 
     /// Runs `inputs` and fails on the first output differing from `outputs` by more than `delta`.
@@ -331,6 +292,90 @@ impl InstructionModel {
     pub fn get_parallel_graph(&self) -> &ParallelExecutionGraph {
         &self.parallel_graph
     }
+}
+
+/// Validates and builds every instruction, and checks that each weight slot, parameter
+/// vector, map and (with `sequence`) key/value slot and scanner is used; slots and
+/// scanners by exactly one instruction.
+pub(crate) fn build_instructions(
+    info: &InstructionModelInfo,
+    computation_buffer_indexes: &[usize],
+    computation_buffer_sizes: &[usize],
+    sequence: Option<&SequenceInfo>,
+) -> InstructionModelResult<BuiltInstructions> {
+    let context = ModelContext {
+        computation_buffer_indexes,
+        computation_buffer_sizes,
+        weights: &info.weights,
+        bias: &info.bias,
+        parameters: info.parameters.as_deref().unwrap_or(&[]),
+        maps: info.maps.as_deref().unwrap_or(&[]),
+        sequence,
+    };
+
+    let mut instructions = Vec::new();
+    let mut slot_owners: Vec<Vec<usize>> = vec![Vec::new(); context.weights.len()];
+    let mut used_parameters = vec![false; context.parameters.len()];
+    let mut used_maps = vec![false; context.maps.len()];
+    let mut kv_slot_users = vec![0usize; sequence.map_or(0, |s| s.kv_slots.len())];
+    let mut scanner_users = vec![0usize; sequence.map_or(0, |s| s.scanners)];
+
+    for (instruction_index, instruction_info) in info.instructions.iter().enumerate() {
+        instructions.push(context.create(instruction_info)?);
+
+        match instruction_info {
+            InstructionInfo::Dot(info) => slot_owners[info.weights].push(instruction_index),
+            InstructionInfo::Attention(info) => slot_owners[info.weights].push(instruction_index),
+            InstructionInfo::Embedding(info) => slot_owners[info.weights].push(instruction_index),
+            InstructionInfo::ElemWiseAdd(info) => used_parameters[info.parameters] = true,
+            InstructionInfo::ElemWiseMul(info) => used_parameters[info.parameters] = true,
+            InstructionInfo::LayerNorm(info) => {
+                used_parameters[info.gain] = true;
+                used_parameters[info.bias] = true;
+            }
+            InstructionInfo::ClipElementwise(info) => {
+                for idx in [info.parameters_min, info.parameters_max]
+                    .into_iter()
+                    .flatten()
+                {
+                    used_parameters[idx] = true;
+                }
+            }
+            InstructionInfo::MapTransform(info) => used_maps[info.map] = true,
+            InstructionInfo::CausalAttention(info) => kv_slot_users[info.slot] += 1,
+            InstructionInfo::SegmentFeatures(info) => scanner_users[info.scanner] += 1,
+            _ => {}
+        }
+    }
+
+    if let Some(index) = slot_owners.iter().position(Vec::is_empty) {
+        return Err(InstructionModelError::UnusedWeights { index });
+    }
+    if let Some(index) = used_parameters.iter().position(|used| !used) {
+        return Err(InstructionModelError::UnusedParameters { index });
+    }
+    if let Some(index) = used_maps.iter().position(|used| !used) {
+        return Err(InstructionModelError::UnusedMap { index });
+    }
+    for (state, users) in [
+        ("key/value slot", &kv_slot_users),
+        ("scanner", &scanner_users),
+    ] {
+        if let Some(index) = users.iter().position(|&count| count == 0) {
+            return Err(InstructionModelError::UnusedSequenceState {
+                state: state.to_string(),
+                index,
+            });
+        }
+        if let Some(index) = users.iter().position(|&count| count > 1) {
+            return Err(InstructionModelError::SharedSequenceState {
+                state: state.to_string(),
+                index,
+            });
+        }
+    }
+
+    Ok((instructions, slot_owners))
 }
 
 #[cfg(test)]

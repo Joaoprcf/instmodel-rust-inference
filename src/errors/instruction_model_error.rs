@@ -336,6 +336,96 @@ pub enum InstructionModelError {
         expected: usize,
         got: usize,
     },
+
+    #[error("Unsupported model format_version {version}")]
+    UnsupportedFormatVersion { version: u32 },
+
+    #[error(
+        "Instruction {instruction_index} ({instruction_type}) keeps per-sequence state; load the model with SequenceModel"
+    )]
+    StatefulInstruction {
+        instruction_index: usize,
+        instruction_type: String,
+    },
+
+    #[error("{instruction_type} needs sequence state; run it through SequenceModel::step")]
+    MissingSequenceState { instruction_type: String },
+
+    #[error("Not a sequence model: {reason}")]
+    NotSequenceModel { reason: String },
+
+    #[error("Invalid sequence block: {reason}")]
+    InvalidSequenceInfo { reason: String },
+
+    #[error("The key/value slot {index} must be within the number of slots")]
+    KvSlotIndexOutOfBounds { index: usize },
+
+    #[error("The scanner {index} must be within the number of scanners")]
+    ScannerIndexOutOfBounds { index: usize },
+
+    #[error("The {state} {index} is referenced by more than one instruction")]
+    SharedSequenceState { state: String, index: usize },
+
+    #[error("The {state} {index} is not used by any instruction")]
+    UnusedSequenceState { state: String, index: usize },
+
+    #[error(
+        "CAUSAL_ATTENTION uses {heads} heads and {kv_heads} key/value heads but slot {slot} declares {slot_heads} and {slot_kv_heads}"
+    )]
+    AttentionHeadsMismatch {
+        slot: usize,
+        heads: usize,
+        kv_heads: usize,
+        slot_heads: usize,
+        slot_kv_heads: usize,
+    },
+
+    #[error(
+        "Output buffer at index {index} has size {actual_size}, but the expected size is {expected_size}"
+    )]
+    OutputBufferSizeMismatch {
+        index: usize,
+        actual_size: usize,
+        expected_size: usize,
+    },
+
+    #[error("SEGMENT_FEATURES needs at least one row")]
+    InvalidSegmentRows,
+
+    #[error("LAYER_NORM epsilon must be finite and non-negative, got {epsilon}")]
+    InvalidEpsilon { epsilon: f32 },
+
+    #[error("EMBEDDING id {value} is outside the table of {rows} rows")]
+    EmbeddingIdOutOfRange { value: f32, rows: usize },
+
+    #[error("Token {token} is outside the vocabulary of {vocab_size} tokens")]
+    TokenOutOfVocabulary { token: u32, vocab_size: usize },
+
+    #[error("The sequence already holds max_positions = {max_positions} tokens")]
+    SequenceFull { max_positions: usize },
+
+    #[error("Cannot truncate to position {requested}: the state holds {position} tokens")]
+    TruncatePastPosition { requested: usize, position: usize },
+
+    #[error("Sequence state belongs to model {found:#018x}, not {expected:#018x}")]
+    SequenceStateModelMismatch { expected: u64, found: u64 },
+
+    #[error("Invalid sequence state bytes: {reason}")]
+    InvalidSequenceState { reason: String },
+
+    #[error("Validation sequence {sequence} is malformed: {reason}")]
+    ValidationSequenceShape { sequence: usize, reason: String },
+
+    #[error(
+        "Validation sequence {sequence} differs at token {position}: max logit error {max_error}, argmax {computed_argmax} (expected {expected_argmax})"
+    )]
+    SequenceValidationMismatch {
+        sequence: usize,
+        position: usize,
+        max_error: f32,
+        expected_argmax: usize,
+        computed_argmax: usize,
+    },
 }
 
 impl From<FeatureSizeMismatchError> for InstructionModelError {

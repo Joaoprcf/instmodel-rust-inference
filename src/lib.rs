@@ -1,5 +1,6 @@
 //! Inference for instmodel JSON models: a validated instruction sequence executed over one
-//! unified f32 buffer, plus graph authoring, in-place θ mutation, ES training and GPU/WGSL paths.
+//! unified f32 buffer, token-by-token sequence models with a caller-owned key/value cache,
+//! plus graph authoring, in-place θ mutation, ES training and GPU/WGSL paths.
 
 pub mod activation;
 pub mod benchmarks;
@@ -14,6 +15,7 @@ mod instruction_model_validation;
 pub mod instructions;
 pub mod parallel_predict;
 pub mod params;
+pub mod sequence;
 pub mod utils;
 
 pub use activation::Activation;
@@ -23,3 +25,4 @@ pub use instruction_model::InstructionModel;
 pub use instruction_model_info::{InstructionModelInfo, ValidationData};
 pub use parallel_predict::{ParallelPredictOutput, PredictConfig};
 pub use params::ParamLayout;
+pub use sequence::{SequenceModel, SequenceState, argmax_allowed};

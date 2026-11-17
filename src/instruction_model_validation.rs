@@ -7,7 +7,9 @@ use crate::errors::{
     InstructionModelError, InstructionModelResult, InvalidFeatureSizeError,
     ValidationInputOutputMismatchError,
 };
-use crate::instruction_model_info::{InstructionInfo, InstructionModelInfo, ValidationData};
+use crate::instruction_model_info::{
+    InstructionInfo, InstructionModelInfo, SequenceInfo, ValidationData,
+};
 
 pub(crate) const MAX_COMPUTATION_BUFFER_SIZE: usize = 1_000_000;
 pub(crate) const MAX_WEIGHT_SIZE: usize = 10_000_000;
@@ -193,8 +195,9 @@ fn fits(offset: usize, len: usize, size: usize) -> bool {
     offset.checked_add(len).is_some_and(|end| end <= size)
 }
 
-/// Checks every buffer, weight, parameter and map reference of one instruction, so that
-/// execution stays inside the buffers it names (the CPU and GPU executors rely on this).
+/// Checks every buffer, weight, parameter, map and sequence-state reference of one
+/// instruction, so that execution stays inside the buffers it names (the CPU and GPU
+/// executors rely on this). Stateful instructions need `sequence`.
 pub(crate) fn validate_instruction(
     instruction: &InstructionInfo,
     sizes: &[usize],
@@ -202,6 +205,7 @@ pub(crate) fn validate_instruction(
     bias: &[Vec<f32>],
     parameters: &[Vec<f32>],
     maps: &[HashMap<String, Vec<f32>>],
+    sequence: Option<&SequenceInfo>,
 ) -> InstructionModelResult<()> {
     for input in instruction.get_inputs() {
         validate_buffer_index("input", input, sizes.len())?;
@@ -304,7 +308,161 @@ pub(crate) fn validate_instruction(
         }
         InstructionInfo::AddBufferHeads(info) => validate_heads(&info.input, info.output, sizes),
         InstructionInfo::Activation(_) | InstructionInfo::ReduceSum(_) => Ok(()),
+        InstructionInfo::Embedding(info) => {
+            let matrix = weights.get(info.weights).ok_or(
+                InstructionModelError::WeightsIndexOutOfBounds {
+                    index: info.weights,
+                },
+            )?;
+            if info.internal_input_index >= sizes[info.input] {
+                return Err(InstructionModelError::InternalInputIndexOutOfBounds {
+                    index: info.internal_input_index,
+                });
+            }
+            let width = sizes[info.output];
+            if let Some(row) = matrix.iter().find(|row| row.len() != width) {
+                return Err(InstructionModelError::OutputBufferSizeMismatch {
+                    index: info.output,
+                    actual_size: width,
+                    expected_size: row.len(),
+                });
+            }
+            Ok(())
+        }
+        InstructionInfo::LayerNorm(info) => {
+            let size = sizes[info.input];
+            if sizes[info.output] != size {
+                return Err(InstructionModelError::OutputBufferSizeMismatch {
+                    index: info.output,
+                    actual_size: sizes[info.output],
+                    expected_size: size,
+                });
+            }
+            if !(info.epsilon.is_finite() && info.epsilon >= 0.0) {
+                return Err(InstructionModelError::InvalidEpsilon {
+                    epsilon: info.epsilon,
+                });
+            }
+            check_parameters(info.gain, info.input)?;
+            check_parameters(info.bias, info.input)
+        }
+        InstructionInfo::SegmentFeatures(info) => {
+            let sequence = sequence.ok_or_else(|| missing_state(instruction))?;
+            if info.scanner >= sequence.scanners {
+                return Err(InstructionModelError::ScannerIndexOutOfBounds {
+                    index: info.scanner,
+                });
+            }
+            if info.rows == 0 {
+                return Err(InstructionModelError::InvalidSegmentRows);
+            }
+            if sizes[info.output] != 2 {
+                return Err(InstructionModelError::OutputBufferSizeMismatch {
+                    index: info.output,
+                    actual_size: sizes[info.output],
+                    expected_size: 2,
+                });
+            }
+            Ok(())
+        }
+        InstructionInfo::CausalAttention(info) => {
+            let sequence = sequence.ok_or_else(|| missing_state(instruction))?;
+            let slot = sequence
+                .kv_slots
+                .get(info.slot)
+                .ok_or(InstructionModelError::KvSlotIndexOutOfBounds { index: info.slot })?;
+            if (info.heads, info.kv_heads) != (slot.heads, slot.kv_heads) {
+                return Err(InstructionModelError::AttentionHeadsMismatch {
+                    slot: info.slot,
+                    heads: info.heads,
+                    kv_heads: info.kv_heads,
+                    slot_heads: slot.heads,
+                    slot_kv_heads: slot.kv_heads,
+                });
+            }
+            // validate_sequence_info bounds these products by the cache size limit.
+            let input_size = (slot.heads + 2 * slot.kv_heads) * slot.head_dim;
+            let output_size = slot.heads * slot.head_dim;
+            if sizes[info.input] != input_size {
+                return Err(InstructionModelError::InputBufferSizeMismatch {
+                    index: info.input,
+                    actual_size: sizes[info.input],
+                    expected_size: input_size,
+                });
+            }
+            if sizes[info.output] != output_size {
+                return Err(InstructionModelError::OutputBufferSizeMismatch {
+                    index: info.output,
+                    actual_size: sizes[info.output],
+                    expected_size: output_size,
+                });
+            }
+            Ok(())
+        }
     }
+}
+
+fn missing_state(instruction: &InstructionInfo) -> InstructionModelError {
+    InstructionModelError::MissingSequenceState {
+        instruction_type: instruction.type_name().to_string(),
+    }
+}
+
+/// Largest key/value cache, in f32 values per state (1 GiB).
+pub(crate) const MAX_KV_CACHE_VALUES: usize = 1 << 28;
+
+/// Checks the `sequence` block against the buffer layout: the token buffer has size 1,
+/// the logits buffer one entry per vocabulary token, and the caches fit in memory.
+pub(crate) fn validate_sequence_info(
+    sequence: &SequenceInfo,
+    sizes: &[usize],
+) -> InstructionModelResult<()> {
+    let invalid = |reason: String| Err(InstructionModelError::InvalidSequenceInfo { reason });
+    if sizes.first() != Some(&1) {
+        return invalid("buffer 0 must have size 1 (the token id)".to_string());
+    }
+    let logits = sizes[sizes.len() - 1];
+    if sequence.vocabulary.len() != logits {
+        return invalid(format!(
+            "vocabulary has {} tokens but the logits buffer has {logits} values",
+            sequence.vocabulary.len()
+        ));
+    }
+    if sequence.max_positions == 0 || sequence.max_positions >= u32::MAX as usize {
+        return invalid(format!(
+            "max_positions must be in [1, {}), got {}",
+            u32::MAX,
+            sequence.max_positions
+        ));
+    }
+    let mut cache_values = 0usize;
+    for (index, slot) in sequence.kv_slots.iter().enumerate() {
+        if slot.heads == 0
+            || slot.kv_heads == 0
+            || slot.head_dim == 0
+            || !slot.heads.is_multiple_of(slot.kv_heads)
+        {
+            return invalid(format!(
+                "kv slot {index} needs heads, kv_heads and head_dim >= 1 with kv_heads dividing heads, got {slot:?}"
+            ));
+        }
+        let values = slot
+            .heads
+            .checked_add(slot.kv_heads.saturating_mul(2))
+            .and_then(|width| width.checked_mul(slot.head_dim))
+            .and_then(|_| slot.kv_heads.checked_mul(slot.head_dim))
+            .and_then(|row| row.checked_mul(2 * sequence.max_positions))
+            .filter(|&values| values <= MAX_KV_CACHE_VALUES);
+        cache_values = match values.and_then(|v| cache_values.checked_add(v)) {
+            Some(total) if total <= MAX_KV_CACHE_VALUES => total,
+            _ => {
+                return invalid(format!(
+                    "key/value caches exceed {MAX_KV_CACHE_VALUES} values per state"
+                ));
+            }
+        };
+    }
+    Ok(())
 }
 
 fn validate_dense(
@@ -640,6 +798,52 @@ mod tests {
             (
                 json!({"type": "DOT", "input": 0, "output": 3, "weights": 0}),
                 |e| matches!(e, E::BufferIndexOutOfBounds { .. }),
+            ),
+            (
+                json!({"type": "EMBEDDING", "input": 0, "output": 1, "weights": 0}),
+                |e| matches!(e, E::WeightsIndexOutOfBounds { index: 0 }),
+            ),
+            (
+                json!({"type": "LAYER_NORM", "input": 1, "output": 1, "gain": 0, "bias": 5,
+                       "epsilon": 1e-5}),
+                |e| matches!(e, E::ParametersIndexOutOfBounds { index: 5 }),
+            ),
+            (
+                json!({"type": "LAYER_NORM", "input": 0, "output": 2, "gain": 0, "bias": 0,
+                       "epsilon": 1e-5}),
+                |e| {
+                    matches!(
+                        e,
+                        E::ParametersSizeMismatch {
+                            params_size: 2,
+                            layer_size: 4,
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                json!({"type": "LAYER_NORM", "input": 0, "output": 1, "gain": 0, "bias": 0,
+                       "epsilon": 1e-5}),
+                |e| matches!(e, E::OutputBufferSizeMismatch { index: 1, .. }),
+            ),
+            (
+                json!({"type": "LAYER_NORM", "input": 1, "output": 1, "gain": 0, "bias": 0,
+                       "epsilon": -1.0}),
+                |e| matches!(e, E::InvalidEpsilon { .. }),
+            ),
+            (
+                json!({"type": "SEGMENT_FEATURES", "input": 0, "output": 1, "members": [1],
+                       "rows": 4, "scanner": 0}),
+                |e| {
+                    matches!(
+                        e,
+                        E::StatefulInstruction {
+                            instruction_index: 0,
+                            ..
+                        }
+                    )
+                },
             ),
         ];
         for (instruction, check) in cases {

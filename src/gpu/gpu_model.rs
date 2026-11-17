@@ -246,7 +246,13 @@ impl<'a> GpuModelBuilder<'a> {
         let parameters = info.parameters.as_deref().unwrap_or(&[]);
         let maps = info.maps.as_deref().unwrap_or(&[]);
         for (idx, inst_info) in info.instructions.iter().enumerate() {
-            if let InstructionInfo::Attention(_) | InstructionInfo::MapTransform(_) = inst_info {
+            if let InstructionInfo::Attention(_)
+            | InstructionInfo::MapTransform(_)
+            | InstructionInfo::Embedding(_)
+            | InstructionInfo::LayerNorm(_)
+            | InstructionInfo::SegmentFeatures(_)
+            | InstructionInfo::CausalAttention(_) = inst_info
+            {
                 return Err(GpuModelError::UnsupportedInstruction {
                     instruction_type: format!("{inst_info:?}"),
                 });
@@ -258,6 +264,7 @@ impl<'a> GpuModelBuilder<'a> {
                 &info.bias,
                 parameters,
                 maps,
+                None,
             )
             .map_err(|e| match e {
                 InstructionModelError::WeightsIndexOutOfBounds { .. } => {
@@ -395,7 +402,12 @@ impl<'a> GpuModelBuilder<'a> {
                 self.ptr(i.output),
                 self.size(i.input),
             ),
-            InstructionInfo::Attention(_) | InstructionInfo::MapTransform(_) => {
+            InstructionInfo::Attention(_)
+            | InstructionInfo::MapTransform(_)
+            | InstructionInfo::Embedding(_)
+            | InstructionInfo::LayerNorm(_)
+            | InstructionInfo::SegmentFeatures(_)
+            | InstructionInfo::CausalAttention(_) => {
                 unreachable!("rejected by build_instructions")
             }
         })
@@ -633,6 +645,24 @@ mod tests {
                 weightless(
                     json!([2, 2]),
                     json!({"type": "ATTENTION", "input": 0, "key": 0, "output": 1, "weights": 0}),
+                    json!(null),
+                ),
+                |e| matches!(e, E::UnsupportedInstruction { .. }),
+            ),
+            (
+                weightless(
+                    json!([2, 2]),
+                    json!({"type": "LAYER_NORM", "input": 0, "output": 1, "gain": 0, "bias": 0,
+                           "epsilon": 1e-5}),
+                    json!([[1.0, 1.0]]),
+                ),
+                |e| matches!(e, E::UnsupportedInstruction { .. }),
+            ),
+            (
+                weightless(
+                    json!([1, 2]),
+                    json!({"type": "CAUSAL_ATTENTION", "input": 0, "output": 1, "heads": 1,
+                           "kv_heads": 1, "slot": 0}),
                     json!(null),
                 ),
                 |e| matches!(e, E::UnsupportedInstruction { .. }),
